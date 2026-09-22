@@ -152,7 +152,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 
     if (x < cam.resolution.x && y < cam.resolution.y) {
         int index = x + (y * cam.resolution.x);
-        thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, traceDepth);
+        thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, 0);
         thrust::uniform_real_distribution<float> u01(0, 1);
 
         float xJitter = u01(rng);
