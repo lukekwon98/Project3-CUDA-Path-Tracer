@@ -17,6 +17,8 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 
+#include "optixSetup.h"
+
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -240,6 +242,7 @@ bool init()
     initVAO();
     initTextures();
     initCuda();
+    initOptixContext(); // Create the OptiX context after selecting the CUDA device, cuda device is selected with cudaGLSetDevice(0) in initCuda
     initPBO();
     GLuint passthroughProgram = initShader();
 
@@ -325,6 +328,7 @@ void mainLoop()
 
         glfwSwapBuffers(window);
     }
+    destroyOptixContext(); //Clean up optiX when closing the window or pressing Escape
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
@@ -467,6 +471,7 @@ void runCuda()
     {
         saveImage();
         pathtraceFree();
+        destroyOptixContext(); // Destroy OptiX while its CUDA context still exists
         cudaDeviceReset();
         exit(EXIT_SUCCESS);
     }

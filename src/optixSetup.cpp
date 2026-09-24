@@ -1,0 +1,473 @@
+// initialization and cleanup function declarations
+#include "optixSetup.h"
+
+// CUDA Runtime API, including cudaFree()
+#include <cuda_runtime.h>
+
+// Optix APi types, including OptixDeviceContext
+#include <optix.h>
+
+// Defines the function table that holds OptiX function pointers
+// Must be inluded in exactly ONE .cpp file within the application
+#include <optix_function_table_definition.h>
+
+// Provides optixInit() and wrapperes that call through that table
+#include <optix_stubs.h>
+
+#include <stdexcept>
+#include <string>
+#include <iostream>
+#include <fstream>
+#include <iterator>
+
+
+//PTX: Intermediate GPu instructions generated from optixPrograms.cu - generated on build, not runtime (created by specifying __raygen__rg and tweaking cmakeslists)
+//Module: OPtiX compiles the PTX into a module containing the GPU program
+//Program group: Selects __raygen__rg from that module as the raygen program
+//Pipeline: Links the selected program groups into an exectuable GPU pipeline
+//SBT: Supplies records identifying which programs to invoke for a particular launch, plus optional data
+
+//optixContext: Create context - identifies the shared OptiX environment where we create modules, program groups, and pipelines
+//optixModule: Create module from PTX - Identifies the module containing the compiled GPU program
+//pipelineCompileOptions: Configure Compilation - Stores settings shared by module and pipeline creation. Settings, not a handle
+//raygenProgramGroup: Select raygen function - Identifies the program group selection __raygen__rg from optixModule
+//optixPipeline: Link pipeline - identifies the executable pipeline built from that program group
+//dev_raygenRecord: Upload SBT record - Points to the GPU allocation containing the packed raygen record
+//sbt: Describe SBT + Launch: CPU-side structure whose raygenRecord field holds that GPU address, will be passed into launch call
+
+namespace { // Anonymous namespace makes names private to this .cpp file
+	// Handle to the OptiX device context
+	// nullptr means we have not created a context yet
+	OptixDeviceContext optixContext = nullptr;
+
+	// Handle to the module containing our GPU program - moduleOptiosn controls compilation choices such as optimization
+	OptixModule optixModule = nullptr;
+
+	// Keeping settings so we can resue them when creating the pipeline
+	// Module creation and pipeline creation must use consistent settings - describes features the eventual pipeline will use (motion blur, payload values, attribute values etc)
+	OptixPipelineCompileOptions pipelineCompileOptions = {};
+
+	// Handle to the program group selecting the raygen function - tells OptiX to use the function named __raygen__rg from this module as a ray generation program
+	// It's called a group, but a raygen program grou pselects just one entry function - a hit group can combine closest-hit, any-hit, and intersection functions
+	// Selects functions from a module and specifies their roles in the pipeline
+	OptixProgramGroup raygenProgramGroup = nullptr;
+
+	// Miss program group - tells OptiX which program to run when a traced ray hits no geometry
+	OptixProgramGroup missProgramGroup = nullptr;
+
+	// Handle to the executable pipeline that links the selected GPU programs, creating it does not launch GPU work
+	OptixPipeline optixPipeline = nullptr;
+
+	// optixContext - holds optiX state associated with the CUDA context. Modules and pipelines belong to it
+	// optixModule - contains compiled GPU programs from the PTX (__raygen__rg())
+	// pipelineCompileOptions - a settings structure describing pipeline features. isn't a context or an executeable pipeline
+
+	// Read the generated PTX file into CPU memory
+	std::string loadPtxFile(const char* path) {
+		std::ifstream file(path, std::ios::binary);
+
+		if (!file.is_open()) {
+			throw std::runtime_error(std::string("Could not open PTX file: ") + path);
+		}
+
+		std::string ptx{
+			std::istreambuf_iterator<char>(file),
+			std::istreambuf_iterator<char>()
+		};
+
+		if (ptx.empty()) {
+			throw std::runtime_error(std::string("PTX file is empty: ") + path);
+		}
+
+		return ptx;
+	}
+
+	//////////////////////////////////
+	// Shader binding table (SBT) - provides records identifying the programs to use during a launch, along wiht optional program-specific data
+	//////////////////////////////////
+
+	// Define the layout for the raygen SBT record
+	// alignas: ensures that records satisfy OptiX's alignment requirement
+	struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) RaygenRecord { //identifies which OptiX program group to invoke
+		// OptiX will fill this with information identifying the program
+		char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+	};
+
+	//Header only layout - same layout as our raygen record
+	using MissRecord = RaygenRecord;
+	MissRecord* dev_missRecord = nullptr;
+
+	// Pointer to teh GPU allocation that holds the raygen record, no GPU memory memory actually allocated
+	RaygenRecord* dev_raygenRecord = nullptr;
+
+	// CPU-side description of where the SBT records are stored on the GPU, zero initialized
+	OptixShaderBindingTable sbt = {};
+
+	// Detailed diagnostics reported by OptiX to the CPU
+	void optixLogCallback(unsigned int level, const char* tag, const char* message, void*) {
+		std::cerr << "[OptiX][" << level << "][" << tag << "] " << message << std::endl;
+	}
+}
+
+void initOptixContext() {
+	// Ensure Cuda is initialized for the current device, passing nullptr frees no allocation
+	// Stop initialization if CUDA reports an error
+	cudaError_t cudaResult = cudaFree(nullptr);
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("CUDA initialization failed: ") + cudaGetErrorString(cudaResult));
+	}
+
+	//////////////////////////////////
+	// Load the OptiX driver API and populate its function table
+	//////////////////////////////////
+	OptixResult optixResult = optixInit();
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("Optix initialization failed. Eror code: ") + std::to_string(static_cast<int>(optixResult)));
+	}
+
+	//////////////////////////////////
+	// Create Optix Context
+	//////////////////////////////////
+	// Zero-initialize all options, these options configure the context we'll create
+	OptixDeviceContextOptions options = {};
+
+	// Enable diagnostic messages, including detailed information
+	options.logCallbackFunction = optixLogCallback;
+	options.logCallbackLevel = 4;
+
+	// Enable additional checks while debugging the setup
+	options.validationMode = OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_ALL;
+
+	// nullptr tells OptiX to use the current CUDA context, configured with &options, and writes the created handle into &optixContext.
+	// reusing existing optixREsult 
+	optixResult = optixDeviceContextCreate(nullptr, &options, &optixContext);
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX context creation failed: ") + optixGetErrorString(optixResult));
+	}
+
+	std::cout << "OptiX context created." << std::endl;
+
+	// Print the PTX path supplied by CMake
+	std::cout << "OptiX PTX path: " << OPTIX_PTX_PATH << std::endl;
+
+	// Load the intermediate GPU program using the path supplied by CMake
+	std::string ptx = loadPtxFile(OPTIX_PTX_PATH);
+
+	// Confirm we actually read the file
+	std::cout << "Loaded PTX: " << ptx.size() << " bytes." << std::endl;
+
+	// Configure compilation of this module
+	OptixModuleCompileOptions moduleOptions = {};
+	moduleOptions.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
+	moduleOptions.optLevel = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
+	moduleOptions.debugLevel = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
+
+	// First test only runs raygen, does not trace rays
+	pipelineCompileOptions.usesMotionBlur = false;
+	pipelineCompileOptions.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+	pipelineCompileOptions.numPayloadValues = 0;
+	pipelineCompileOptions.numAttributeValues = 0;
+	pipelineCompileOptions.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
+
+	// Haven't declared a GPU laun-parameter variable yet
+	pipelineCompileOptions.pipelineLaunchParamsVariableName = nullptr;
+
+	// OptiX writes compiler diagnostics into this CPU buffer
+	char log[4096] = {};
+	size_t logSize = sizeof(log);
+
+	//////////////////////////////////
+	// Create Optix Module
+	//////////////////////////////////
+	optixResult = optixModuleCreate(optixContext, &moduleOptions, &pipelineCompileOptions, 
+		ptx.c_str(), // Pointer to PTX text
+		ptx.size(), // Length of the text in bytes
+		log, 
+		&logSize, // Buffer capacity in, log size out
+		&optixModule);
+	
+	// Ensure printing stays within the buffer even if the log was truncated
+	log[sizeof(log) - 1] = '\0';
+	if (log[0] != '\0') {
+		std::cout << "OptiX module log:\n" << log << std::endl;
+	}
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX module creation failed: ") + optixGetErrorString(optixResult));
+	}
+
+	std::cout << "Optix module created." << std::endl;
+
+	// Describe which GPU function we want and its role
+	OptixProgramGroupDesc raygenDesc = {};
+	raygenDesc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN; //kind is raygen
+	raygenDesc.raygen.module = optixModule;
+	raygenDesc.raygen.entryFunctionName = "__raygen__rg";
+
+	// Default program-group options are sufficient for initial test
+	OptixProgramGroupOptions programGroupOptions = {};
+
+	// Reuse the diagnostic buffer. reset its capacity because the previous call changed logSize
+	log[0] = '\0';
+	logSize = sizeof(log);
+
+	//////////////////////////////////
+	// Create program group - selects functions from a module and specifies their roles in the pipeline
+	//////////////////////////////////
+	optixResult = optixProgramGroupCreate(optixContext, &raygenDesc,
+		1,// Number of program groups to create
+		&programGroupOptions,
+		log,
+		&logSize,
+		&raygenProgramGroup); //receives the created handle
+
+	log[sizeof(log) - 1] = '\0';
+	if (log[0] != '\0') {
+		std::cout << "OptiX program group log:\n" << log << std::endl;
+	}
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX raygen program group creation failed: ") + optixGetErrorString(optixResult));
+	}
+
+	std::cout << "OptiX raygen program group created." << std::endl;
+
+	//////////////////////////////////
+	// Create miss program group
+	//////////////////////////////////
+	OptixProgramGroupDesc missDesc = {};
+	missDesc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
+
+	optixResult = optixProgramGroupCreate(optixContext,
+		&missDesc,
+		1,
+		&programGroupOptions,
+		nullptr,
+		nullptr,
+		&missProgramGroup);
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("Miss program group creation failed: ")+ optixGetErrorString(optixResult));
+	}
+
+
+	//////////////////////////////////
+	// Link raygen program group into pipeline
+	//////////////////////////////////
+		// Pipeline includes these
+	OptixProgramGroup programGroups[] = {
+		raygenProgramGroup,
+		missProgramGroup,
+	};
+
+	OptixPipelineLinkOptions linkOptions = {};
+
+	// Trace recursion depth, not the rendereer's total bounce count
+	linkOptions.maxTraceDepth = 0;
+
+	log[0] = '\0';
+	logSize = sizeof(log);
+
+	optixResult = optixPipelineCreate(
+		optixContext, // Context that owns the OptiX objects
+		&pipelineCompileOptions, // Same compile settings for the module
+		&linkOptions, // Settings for linking the pipeline
+		programGroups, // Address for our single program-group handle
+		2, // Number of program groups
+		log, // diagnostics
+		&logSize, 
+		&optixPipeline // handle
+	);
+
+	log[sizeof(log) - 1] = '\0';
+	if (log[0] != '\0') {
+		std::cout << "OptiX pipeline log: \n" << log << std::endl;
+	}
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX pipeline creation failed: ") + optixGetErrorString(optixResult));
+	}
+	std::cout << "OptiX pipeline created." << std::endl;
+
+	//////////////////////////////////
+	// Create a record in CPU memory
+	//////////////////////////////////
+	RaygenRecord raygenRecord = {}; //initially filled with zeros
+
+
+	// Ask OptiX to write the program group's identifying information into the record's header
+	optixResult = optixSbtRecordPackHeader(
+		raygenProgramGroup, // Program group that the record will identify
+		&raygenRecord // Address of the CPU record to fill
+	);
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX raygen record header packing failed: ") + optixGetErrorString(optixResult));
+	}
+
+	std::cout << "OptiX raygen record header packed." << std::endl; //Packing: writing OptiX's internal binary information into the header
+
+	//////////////////////////////////
+	// Copy packed raygen record to GPU memory
+	//////////////////////////////////
+	
+	// Allocate GPU memory for one raygen record, dev_raygenRecord has the allocation's address
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_raygenRecord), sizeof(RaygenRecord));
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("Raygen record allocation failed: ") + cudaGetErrorString(cudaResult));
+	}
+
+	// Copy the packed CPU record into the GPU allocation
+	cudaResult = cudaMemcpy(
+		dev_raygenRecord, // Destination: GPU memory
+		&raygenRecord, // Source is our local GPU record
+		sizeof(RaygenRecord),
+		cudaMemcpyHostToDevice
+	);
+
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("Raygen record upload failed: ") + cudaGetErrorString(cudaResult));
+	}
+
+	// Tell the SBT description where the GPU record lives, CUdeviceptr is the device-address type expected by OptiX. Converts the address representation, copies no data
+	sbt.raygenRecord = reinterpret_cast<CUdeviceptr>(dev_raygenRecord);
+
+	std::cout << "OptiX raygen SBT record uploaded." << std::endl;
+
+	//////////////////////////////////
+	// Miss record stuff
+	//////////////////////////////////
+
+	// Prepare the miss record in CPU memory
+	MissRecord missRecord = {};
+	optixResult = optixSbtRecordPackHeader(
+		missProgramGroup, &missRecord
+	);
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("Miss record packing failed: ") + optixGetErrorString(optixResult));
+	}
+
+	//Allocate GPU storage for this record
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_missRecord), sizeof(MissRecord));
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("Miss record allocation failed: ") + cudaGetErrorString(cudaResult));
+	}
+
+	//Upload packed record
+	cudaResult = cudaMemcpy(dev_missRecord, &missRecord, sizeof(MissRecord), cudaMemcpyHostToDevice);
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("Miss record upload failed: ") + cudaGetErrorString(cudaResult));
+	}
+
+	//Describe the array of miss records: address, spacing, and count
+	sbt.missRecordBase = reinterpret_cast<CUdeviceptr>(dev_missRecord);
+	sbt.missRecordStrideInBytes = sizeof(MissRecord);
+	sbt.missRecordCount = 1;
+
+	//////////////////////////////////
+	// Launch pipeline
+	//////////////////////////////////
+	//std::cout << "Before optixLaunch" << std::endl; //DEBUGUGUUGGUGUGG
+
+	optixResult = optixLaunch(
+		optixPipeline,
+		nullptr, //Default CUDA stream
+		0, //No GPU launch-parameter buffer (yet)
+		0, //Luanch-parameter buffer size
+		&sbt, //CPU description pointing to our GPU SBT record
+		1, 1, 1 //Launch dimensions (width, height, depth) - OptiX invokes raygen for each launch index, 1, 1, 1 means exactly one invocation
+	);
+
+	//std::cout << "optixLaunch returned: " << optixGetErrorString(optixResult) << std::endl; //DEBUGUGUGGUGUGUGUGUG
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX launch failed: ") + optixGetErrorString(optixResult));
+	}
+
+	// Launching is asynch, success above does not mean GPU work finished
+	// Wait for completion, detect execution errors, and flush GPU printf output
+	//std::cout << "Before synchronization" << std::endl;//DEBUGUGUGUGUGUGUG
+	cudaResult = cudaDeviceSynchronize();
+	//std::cout << "Synchronization returned: "<< cudaGetErrorString(cudaResult) << std::endl; //DEBGUUGUGGUGUGUGU
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("OptiX GPU execution failed: ") + cudaGetErrorString(cudaResult));
+	}
+
+	std::cout << "OptiX test launch completed." << std::endl;
+}
+
+void destroyOptixContext() {
+	// Release miss record
+	if (dev_missRecord != nullptr) {
+		cudaError_t result = cudaFree(dev_missRecord);
+		if (result != cudaSuccess) {
+			throw std::runtime_error(std::string("Miss record cleanup failed: ") + cudaGetErrorString(result));
+		}
+		dev_missRecord = nullptr;
+		sbt.missRecordBase = 0;
+		sbt.missRecordStrideInBytes = 0;
+		sbt.missRecordCount = 0;
+	}
+
+	// Release the GPU memory allcoated for the raygen record
+	if (dev_raygenRecord != nullptr) {
+		cudaError_t result = cudaFree(dev_raygenRecord);
+		if (result != cudaSuccess) {
+			throw std::runtime_error(std::string("Raygen record cleanup failed: ") + cudaGetErrorString(result));
+		}
+		dev_raygenRecord = nullptr;
+		sbt.raygenRecord = 0;
+	}
+
+	// Release the pipeline before cleaning up the other OptiX object
+	if (optixPipeline != nullptr) {
+		OptixResult result = optixPipelineDestroy(optixPipeline);
+		if (result != OPTIX_SUCCESS) {
+			throw std::runtime_error(std::string("OptiX pipeline destruction failed: ") + optixGetErrorString(result));
+		}
+		optixPipeline = nullptr;
+	}
+
+	//Release miss program group
+	if (missProgramGroup != nullptr) {
+		OptixResult result = optixProgramGroupDestroy(missProgramGroup);
+		if (result != OPTIX_SUCCESS) {
+			throw std::runtime_error(std::string("Miss program group destruction failed: ") + optixGetErrorString(result));
+		}
+		missProgramGroup = nullptr;
+	}
+	
+	//Release the program group before releasing its module
+	if (raygenProgramGroup != nullptr) {
+		OptixResult result = optixProgramGroupDestroy(raygenProgramGroup);
+		if (result != OPTIX_SUCCESS) {
+			throw std::runtime_error(std::string("OptiX program group destruction failed: ") + optixGetErrorString(result));
+		}
+		raygenProgramGroup = nullptr;
+	}
+
+	//Release optix module
+	if (optixModule != nullptr) {
+		OptixResult result = optixModuleDestroy(optixModule);
+		if (result != OPTIX_SUCCESS) {
+			throw std::runtime_error(std::string("OptiX module destruction failed: ") + optixGetErrorString(result));
+		}
+		optixModule = nullptr;
+	}
+
+	// Nothing to destroy if no context data
+	if (optixContext == nullptr) {
+		return;
+	}
+
+	// Destroy the OptiX context using its handle
+	OptixResult optixResult = optixDeviceContextDestroy(optixContext);
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX context destruction failed: ") + optixGetErrorString(optixResult));
+	}
+
+	// Old handle is no longer valid, clear to make repeated cleanup calls harmless
+	optixContext = nullptr;
+}
