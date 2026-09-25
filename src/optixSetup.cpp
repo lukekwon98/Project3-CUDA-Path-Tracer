@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iterator>
 
+#include "optixLaunchParams.h"
 
 //PTX: Intermediate GPu instructions generated from optixPrograms.cu - generated on build, not runtime (created by specifying __raygen__rg and tweaking cmakeslists)
 //Module: OPtiX compiles the PTX into a module containing the GPU program
@@ -62,12 +63,18 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	// Handle to the executable pipeline that links the selected GPU programs, creating it does not launch GPU work
 	OptixPipeline optixPipeline = nullptr;
 	
+	// Selects the programs used when a ray intersects our triangle
+	OptixProgramGroup hitgroupProgramGroup = nullptr;
+
 	// Temporary GPU workspace used during GAS construction
 	void* dev_gasTempBuffer = nullptr;
 	// GPU allocation holding the completed acceleration structure
 	void* dev_gasOutputBuffer = nullptr;
-	//Opaque identifier returned by Optix for the completed GAS
+	// Opaque identifier returned by Optix for the completed GAS
 	OptixTraversableHandle gasHandle = 0;
+
+	// GPU buffer holding the launch parameters supplied to OptixLaunch()
+	LaunchParams* dev_launchParams = nullptr;
 
 	// Read the generated PTX file into CPU memory
 	std::string loadPtxFile(const char* path) {
@@ -99,6 +106,12 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 		// OptiX will fill this with information identifying the program
 		char header[OPTIX_SBT_RECORD_HEADER_SIZE]; //binary storage, not a text string - OptiX defines it as 32 bytes and requires SBT record alignment of 16 bytes
 	};
+
+	// Same header only layout, it will identify our hitgroup
+	using HitgroupRecord = RaygenRecord;
+
+	// GPU allocation containing the packed record
+	HitgroupRecord* dev_hitgroupRecord = nullptr;
 
 	//Header only layout - same layout as our raygen record
 	using MissRecord = RaygenRecord;
@@ -192,11 +205,12 @@ void initOptixContext() {
 	pipelineCompileOptions.usesMotionBlur = false;
 	pipelineCompileOptions.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
 	pipelineCompileOptions.numPayloadValues = 0;
-	pipelineCompileOptions.numAttributeValues = 0;
+	pipelineCompileOptions.numAttributeValues = 2; // built-in triangle intersections provide 2 barycentric coordinates
 	pipelineCompileOptions.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
+	pipelineCompileOptions.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE; // test pipeline uses triangle geometry
 
 	// Haven't declared a GPU laun-parameter variable yet
-	pipelineCompileOptions.pipelineLaunchParamsVariableName = nullptr;
+	pipelineCompileOptions.pipelineLaunchParamsVariableName = "params";
 
 	// OptiX writes compiler diagnostics into this CPU buffer
 	char log[4096] = {};
@@ -238,9 +252,12 @@ void initOptixContext() {
 	logSize = sizeof(log);
 
 	//////////////////////////////////
-	// Create program group - selects functions from a module and specifies their roles in the pipeline
+	// Create raygen program group - selects functions from a module and specifies their roles in the pipeline
 	//////////////////////////////////
-	optixResult = optixProgramGroupCreate(optixContext, &raygenDesc,
+
+	optixResult = optixProgramGroupCreate(
+		optixContext, 
+		&raygenDesc,
 		1,// Number of program groups to create
 		&programGroupOptions,
 		log,
@@ -264,6 +281,10 @@ void initOptixContext() {
 	OptixProgramGroupDesc missDesc = {};
 	missDesc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
 
+	//Replace the empty miss behavior with the GPU function
+	missDesc.miss.module = optixModule;
+	missDesc.miss.entryFunctionName = "__miss__ms";
+
 	optixResult = optixProgramGroupCreate(optixContext,
 		&missDesc,
 		1,
@@ -271,11 +292,36 @@ void initOptixContext() {
 		nullptr,
 		nullptr,
 		&missProgramGroup);
-
 	if (optixResult != OPTIX_SUCCESS) {
 		throw std::runtime_error(std::string("Miss program group creation failed: ")+ optixGetErrorString(optixResult));
 	}
 
+
+	//////////////////////////////////
+	// Create hit program group
+	//////////////////////////////////
+	OptixProgramGroupDesc hitgroupDesc = {};
+	hitgroupDesc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+
+	//CH = closest-hit
+	hitgroupDesc.hitgroup.moduleCH = optixModule;
+	hitgroupDesc.hitgroup.entryFunctionNameCH = "__closesthit__ch";
+
+	//AH remains null: we aren't using an any-hit program
+	//IS remains null: triangles use Optix's built in intersection
+
+	optixResult = optixProgramGroupCreate(
+		optixContext,
+		&hitgroupDesc,
+		1,
+		&programGroupOptions,
+		nullptr, // the context callback supplies diagnostics
+		nullptr,
+		&hitgroupProgramGroup
+	);
+	checkOptix(optixResult, "Hitgroup program group creation failed");
+
+	std::cout << "OptiX hitgroup program group created." << std::endl;
 
 	//////////////////////////////////
 	// Link raygen program group into pipeline
@@ -284,12 +330,13 @@ void initOptixContext() {
 	OptixProgramGroup programGroups[] = {
 		raygenProgramGroup,
 		missProgramGroup,
+		hitgroupProgramGroup
 	};
 
 	OptixPipelineLinkOptions linkOptions = {};
 
 	// Trace recursion depth, not the rendereer's total bounce count
-	linkOptions.maxTraceDepth = 0;
+	linkOptions.maxTraceDepth = 1;
 
 	log[0] = '\0';
 	logSize = sizeof(log);
@@ -299,7 +346,7 @@ void initOptixContext() {
 		&pipelineCompileOptions, // Same compile settings for the module
 		&linkOptions, // Settings for linking the pipeline
 		programGroups, // Address for our single program-group handle
-		2, // Number of program groups
+		3, // Number of program groups
 		log, // diagnostics
 		&logSize, 
 		&optixPipeline // handle
@@ -328,7 +375,6 @@ void initOptixContext() {
 	if (optixResult != OPTIX_SUCCESS) {
 		throw std::runtime_error(std::string("OptiX raygen record header packing failed: ") + optixGetErrorString(optixResult));
 	}
-
 	std::cout << "OptiX raygen record header packed." << std::endl; //Packing: writing OptiX's internal binary information into the header
 
 	//////////////////////////////////
@@ -386,6 +432,26 @@ void initOptixContext() {
 	sbt.missRecordBase = reinterpret_cast<CUdeviceptr>(dev_missRecord);
 	sbt.missRecordStrideInBytes = sizeof(MissRecord);
 	sbt.missRecordCount = 1;
+
+	//////////////////////////////////
+	// Hit record stuff
+	//////////////////////////////////
+	HitgroupRecord hitgroupRecord = {};
+	optixResult = optixSbtRecordPackHeader(hitgroupProgramGroup, &hitgroupRecord);
+	checkOptix(optixResult, "Hitgroup record packing failed");
+
+	//Allocate storage for one record on the GPU
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_hitgroupRecord), sizeof(HitgroupRecord));
+	checkCuda(cudaResult, "Hitgroup record allocation failed");
+
+	//Copy the packed header into GPU memory
+	cudaResult = cudaMemcpy(dev_hitgroupRecord, &hitgroupRecord, sizeof(HitgroupRecord), cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Hitgroup record upload failed");
+
+	//Describe the GPU record array to Optix
+	sbt.hitgroupRecordBase = reinterpret_cast<CUdeviceptr>(dev_hitgroupRecord);
+	sbt.hitgroupRecordStrideInBytes = sizeof(HitgroupRecord);
+	sbt.hitgroupRecordCount = 1;
 
 	//////////////////////////////////
 	// Single Triangle Test
@@ -501,61 +567,81 @@ void initOptixContext() {
 		0 // Number of the properties
 	);
 
-	if (optixResult != OPTIX_SUCCESS) {
-		throw std::runtime_error(std::string("OptiX GAS build failed: ") +optixGetErrorString(optixResult));
-	}
+if (optixResult != OPTIX_SUCCESS) {
+	throw std::runtime_error(std::string("OptiX GAS build failed: ") + optixGetErrorString(optixResult));
+}
 
-	// Wait for the GPU build to finish before releasing its workspace
-	cudaResult = cudaDeviceSynchronize();
-	checkCuda(cudaResult, "GAS build synchronization failed");
+// Wait for the GPU build to finish before releasing its workspace
+cudaResult = cudaDeviceSynchronize();
+checkCuda(cudaResult, "GAS build synchronization failed");
 
-	// Construction is complete, so the temporary workspace is no longer needed
-	cudaResult = cudaFree(dev_gasTempBuffer);
-	if (cudaResult != cudaSuccess) {
-		throw std::runtime_error(std::string("GAS temporary buffer cleanup failed: ") +cudaGetErrorString(cudaResult));
-	}
-	dev_gasTempBuffer = nullptr;
+// Construction is complete, so the temporary workspace is no longer needed
+cudaResult = cudaFree(dev_gasTempBuffer);
+if (cudaResult != cudaSuccess) {
+	throw std::runtime_error(std::string("GAS temporary buffer cleanup failed: ") + cudaGetErrorString(cudaResult));
+}
+dev_gasTempBuffer = nullptr;
 
-	std::cout << "Optix test triangle GAS built." << std::endl;
+std::cout << "Optix test triangle GAS built." << std::endl;
 
-	//////////////////////////////////
-	// Launch pipeline
-	//////////////////////////////////
-	//std::cout << "Before optixLaunch" << std::endl; //DEBUGUGUUGGUGUGG
+//////////////////////////////////
+// Uplaod parameters after building the GAS
+//////////////////////////////////
 
-	optixResult = optixLaunch(
-		optixPipeline,
-		nullptr, //Default CUDA stream
-		0, //No GPU launch-parameter buffer (yet)
-		0, //Luanch-parameter buffer size
-		&sbt, //CPU description pointing to our GPU SBT record
-		1, 1, 1 //Launch dimensions (width, height, depth) - OptiX invokes raygen for each launch index, 1, 1, 1 means exactly one invocation
-	);
+//Prepare the parameter values on the CPU
+LaunchParams launchParams = {};
+launchParams.gasHandle = gasHandle;
 
-	//std::cout << "optixLaunch returned: " << optixGetErrorString(optixResult) << std::endl; //DEBUGUGUGGUGUGUGUGUG
+//Allocate a GPU buffer for those values
+cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_launchParams), sizeof(LaunchParams));
+checkCuda(cudaResult, "Launch parameter allocation failed");
 
-	if (optixResult != OPTIX_SUCCESS) {
-		throw std::runtime_error(std::string("OptiX launch failed: ") + optixGetErrorString(optixResult));
-	}
+//Upload the parameters. This copies the handle, not the GAS itself
+cudaResult = cudaMemcpy(dev_launchParams, &launchParams, sizeof(LaunchParams), cudaMemcpyHostToDevice);
+checkCuda(cudaResult, "Launch parameter upload failed");
 
-	// Launching is asynch, success above does not mean GPU work finished
-	// Wait for completion, detect execution errors, and flush GPU printf output
-	//std::cout << "Before synchronization" << std::endl;//DEBUGUGUGUGUGUGUG
-	cudaResult = cudaDeviceSynchronize();
-	//std::cout << "Synchronization returned: "<< cudaGetErrorString(cudaResult) << std::endl; //DEBGUUGUGGUGUGUGU
-	if (cudaResult != cudaSuccess) {
-		throw std::runtime_error(std::string("OptiX GPU execution failed: ") + cudaGetErrorString(cudaResult));
-	}
+//Compare it with the value printed by raygen
+std::cout << "CPU GAS handle: " << static_cast<unsigned long long>(gasHandle) << std::endl;
 
-	std::cout << "OptiX test launch completed." << std::endl;
+//////////////////////////////////
+// Launch pipeline
+//////////////////////////////////
+//std::cout << "Before optixLaunch" << std::endl; //DEBUGUGUUGGUGUGG
+
+optixResult = optixLaunch(
+	optixPipeline,
+	nullptr, //Default CUDA stream
+	reinterpret_cast<CUdeviceptr>(dev_launchParams), //No GPU launch-parameter buffer (yet)
+	sizeof(LaunchParams), //Luanch-parameter buffer size
+	&sbt, //CPU description pointing to our GPU SBT record
+	1, 1, 1 //Launch dimensions (width, height, depth) - OptiX invokes raygen for each launch index, 1, 1, 1 means exactly one invocation
+);
+//std::cout << "optixLaunch returned: " << optixGetErrorString(optixResult) << std::endl; //DEBUGUGUGGUGUGUGUGUG
+checkOptix(optixResult, "OptiX launch failed");
+
+// Launching is asynch, success above does not mean GPU work finished
+// Wait for completion, detect execution errors, and flush GPU printf output
+//std::cout << "Before synchronization" << std::endl;//DEBUGUGUGUGUGUGUG
+cudaResult = cudaDeviceSynchronize();
+//std::cout << "Synchronization returned: "<< cudaGetErrorString(cudaResult) << std::endl; //DEBGUUGUGGUGUGUGU
+checkCuda(cudaResult, "OptiX GPU execution failed");
+
+std::cout << "OptiX test launch completed." << std::endl;
 }
 
 void destroyOptixContext() {
+	// The test launch as already snychronized before cleanup.
+	if (dev_launchParams != nullptr) {
+		cudaError_t result = cudaFree(dev_launchParams);
+		checkCuda(result, "Launch parameter cleanup failed");
+		dev_launchParams = nullptr;
+	}
+
 	// Release gas tempbuffer
 	if (dev_gasTempBuffer != nullptr) {
 		cudaError_t result = cudaFree(dev_gasTempBuffer);
 		if (result != cudaSuccess) {
-			throw std::runtime_error(std::string("GAS temporary buffer cleanup failed: ") +cudaGetErrorString(result));
+			throw std::runtime_error(std::string("GAS temporary buffer cleanup failed: ") + cudaGetErrorString(result));
 		}
 		dev_gasTempBuffer = nullptr;
 	}
@@ -564,7 +650,7 @@ void destroyOptixContext() {
 	if (dev_gasOutputBuffer != nullptr) {
 		cudaError_t result = cudaFree(dev_gasOutputBuffer);
 		if (result != cudaSuccess) {
-			throw std::runtime_error(std::string("GAS output buffer cleanup failed: ") +cudaGetErrorString(result));
+			throw std::runtime_error(std::string("GAS output buffer cleanup failed: ") + cudaGetErrorString(result));
 		}
 		dev_gasOutputBuffer = nullptr;
 		gasHandle = 0;
@@ -574,9 +660,19 @@ void destroyOptixContext() {
 	if (dev_testVerticies != nullptr) {
 		cudaError_t result = cudaFree(dev_testVerticies);
 		if (result != cudaSuccess) {
-			throw std::runtime_error(std::string("Triangle vertex cleanup failed: ") +cudaGetErrorString(result));
+			throw std::runtime_error(std::string("Triangle vertex cleanup failed: ") + cudaGetErrorString(result));
 		}
 		dev_testVerticies = nullptr;
+	}
+
+	// Release hit record
+	if (dev_hitgroupRecord != nullptr){
+		cudaError_t result = cudaFree(dev_hitgroupRecord);
+		checkCuda(result, "Hitgroup record cleanup failed");
+		dev_hitgroupRecord = nullptr;
+		sbt.hitgroupRecordBase = 0;
+		sbt.hitgroupRecordStrideInBytes = 0;
+		sbt.hitgroupRecordCount = 0;
 	}
 
 	// Release miss record
@@ -610,6 +706,13 @@ void destroyOptixContext() {
 		optixPipeline = nullptr;
 	}
 
+	// Release hit program group
+	if (hitgroupProgramGroup != nullptr) {
+		OptixResult result = optixProgramGroupDestroy(hitgroupProgramGroup);
+		checkOptix(result, "Hitgroup program group destruction failed");
+		hitgroupProgramGroup = nullptr;
+	}
+
 	//Release miss program group
 	if (missProgramGroup != nullptr) {
 		OptixResult result = optixProgramGroupDestroy(missProgramGroup);
@@ -641,14 +744,11 @@ void destroyOptixContext() {
 	if (optixContext == nullptr) {
 		return;
 	}
-
 	// Destroy the OptiX context using its handle
 	OptixResult optixResult = optixDeviceContextDestroy(optixContext);
-
 	if (optixResult != OPTIX_SUCCESS) {
 		throw std::runtime_error(std::string("OptiX context destruction failed: ") + optixGetErrorString(optixResult));
 	}
-
 	// Old handle is no longer valid, clear to make repeated cleanup calls harmless
 	optixContext = nullptr;
 }
