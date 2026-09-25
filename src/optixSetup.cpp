@@ -25,7 +25,7 @@
 //Module: OPtiX compiles the PTX into a module containing the GPU program
 //Program group: Selects __raygen__rg from that module as the raygen program
 //Pipeline: Links the selected program groups into an exectuable GPU pipeline
-//SBT: Supplies records identifying which programs to invoke for a particular launch, plus optional data
+//SBT: Supplies records identifying which programs to invoke for a particular launch, plus optional data - it's like binding shaders to a renderer
 
 //optixContext: Create context - identifies the shared OptiX environment where we create modules, program groups, and pipelines
 //optixModule: Create module from PTX - Identifies the module containing the compiled GPU program
@@ -47,6 +47,10 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	// Module creation and pipeline creation must use consistent settings - describes features the eventual pipeline will use (motion blur, payload values, attribute values etc)
 	OptixPipelineCompileOptions pipelineCompileOptions = {};
 
+	// optixContext - holds optiX state associated with the CUDA context. Modules and pipelines belong to it
+	// optixModule - contains compiled GPU programs from the PTX (__raygen__rg())
+	// pipelineCompileOptions - a settings structure describing pipeline features. isn't a context or an executeable pipeline
+
 	// Handle to the program group selecting the raygen function - tells OptiX to use the function named __raygen__rg from this module as a ray generation program
 	// It's called a group, but a raygen program grou pselects just one entry function - a hit group can combine closest-hit, any-hit, and intersection functions
 	// Selects functions from a module and specifies their roles in the pipeline
@@ -57,10 +61,13 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 
 	// Handle to the executable pipeline that links the selected GPU programs, creating it does not launch GPU work
 	OptixPipeline optixPipeline = nullptr;
-
-	// optixContext - holds optiX state associated with the CUDA context. Modules and pipelines belong to it
-	// optixModule - contains compiled GPU programs from the PTX (__raygen__rg())
-	// pipelineCompileOptions - a settings structure describing pipeline features. isn't a context or an executeable pipeline
+	
+	// Temporary GPU workspace used during GAS construction
+	void* dev_gasTempBuffer = nullptr;
+	// GPU allocation holding the completed acceleration structure
+	void* dev_gasOutputBuffer = nullptr;
+	//Opaque identifier returned by Optix for the completed GAS
+	OptixTraversableHandle gasHandle = 0;
 
 	// Read the generated PTX file into CPU memory
 	std::string loadPtxFile(const char* path) {
@@ -90,7 +97,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	// alignas: ensures that records satisfy OptiX's alignment requirement
 	struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) RaygenRecord { //identifies which OptiX program group to invoke
 		// OptiX will fill this with information identifying the program
-		char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+		char header[OPTIX_SBT_RECORD_HEADER_SIZE]; //binary storage, not a text string - OptiX defines it as 32 bytes and requires SBT record alignment of 16 bytes
 	};
 
 	//Header only layout - same layout as our raygen record
@@ -106,6 +113,23 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	// Detailed diagnostics reported by OptiX to the CPU
 	void optixLogCallback(unsigned int level, const char* tag, const char* message, void*) {
 		std::cerr << "[OptiX][" << level << "][" << tag << "] " << message << std::endl;
+	}
+
+	//GPU allocation containing the three vertices of a test triangle
+	float3* dev_testVerticies = nullptr;
+
+
+	//Error printing Helpers
+	void checkCuda(cudaError_t result, const char* operation) {
+		if (result != cudaSuccess) {
+			throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(result));
+		}
+	}
+
+	void checkOptix(OptixResult result, const char* operation) {
+		if (result != OPTIX_SUCCESS) {
+			throw std::runtime_error(std::string(operation) + ": " + optixGetErrorString(result));
+		}
 	}
 }
 
@@ -301,7 +325,6 @@ void initOptixContext() {
 		raygenProgramGroup, // Program group that the record will identify
 		&raygenRecord // Address of the CPU record to fill
 	);
-
 	if (optixResult != OPTIX_SUCCESS) {
 		throw std::runtime_error(std::string("OptiX raygen record header packing failed: ") + optixGetErrorString(optixResult));
 	}
@@ -320,12 +343,11 @@ void initOptixContext() {
 
 	// Copy the packed CPU record into the GPU allocation
 	cudaResult = cudaMemcpy(
-		dev_raygenRecord, // Destination: GPU memory
+		dev_raygenRecord,
 		&raygenRecord, // Source is our local GPU record
 		sizeof(RaygenRecord),
 		cudaMemcpyHostToDevice
 	);
-
 	if (cudaResult != cudaSuccess) {
 		throw std::runtime_error(std::string("Raygen record upload failed: ") + cudaGetErrorString(cudaResult));
 	}
@@ -366,6 +388,137 @@ void initOptixContext() {
 	sbt.missRecordCount = 1;
 
 	//////////////////////////////////
+	// Single Triangle Test
+	//////////////////////////////////
+	const float3 vertices[] = {
+	make_float3(-1.0f, -1.0f, 0.0f),
+	make_float3(1.0f, -1.0f, 0.0f),
+	make_float3(0.0f,  1.0f, 0.0f)
+	};
+
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_testVerticies), sizeof(vertices));
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("Triangle vertex allocation failed: ") +cudaGetErrorString(cudaResult));
+	}
+	cudaResult = cudaMemcpy(dev_testVerticies, vertices, sizeof(vertices), cudaMemcpyHostToDevice);
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("Triangle vertex upload failed: ") +cudaGetErrorString(cudaResult));
+	}
+
+	std::cout << "OptiX test triangle vertices uploaded." << std::endl;
+
+	//////////////////////////////////
+	// Describe the triangle and query the GAS(Geometry Acceleration Structure) memory requirements
+	//////////////////////////////////
+
+	// It's like glVertexAttribPointer
+	// Express GPU pointer using the address type expected by OptiX
+	CUdeviceptr vertexBuffer = reinterpret_cast<CUdeviceptr>(dev_testVerticies);
+	
+	// One geometry-flags entry for one future hitgroup SBT record
+	// No need for a any-hit program for the test triangle
+	unsigned int triangleFlags[] = { OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT };
+
+	OptixBuildInput triangleInput = {}; //CPU side description of geometry used to build an acceleration structure, just a description, does not hold the vertex data
+	triangleInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES; //tells optix that geometry consist sof triangles
+
+	// Each vertex contains 3 floats: x,y,z
+	triangleInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
+	triangleInput.triangleArray.vertexStrideInBytes = sizeof(float3);
+	triangleInput.triangleArray.numVertices = 3;
+
+	// Optix expects a CPU array of GPU buffer addresses
+	// With no motion blur, one address is enough
+	// CPU side OptiX API is reading the address from the CPU memory, GPU doesn't repeatedly fetch that address from the CPU for every ray
+	triangleInput.triangleArray.vertexBuffers = &vertexBuffer; //OptiX reads a GPU address stored in CPU memory, then uses the address to locate the vertices
+
+	//No index buffer - every consecutive group of three vertices forms a triangle
+	triangleInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_NONE;
+
+	// All geometry in this input uses one hitgroup SBT record - hitgroup record: a SBT record that selects the programs that handle ray intersections with taht geometry
+	triangleInput.triangleArray.numSbtRecords = 1;
+	triangleInput.triangleArray.flags = triangleFlags;
+
+	//////////////////////////////////
+	// Set build options and ask for the required sizes
+	//////////////////////////////////
+
+	//Build a new acceleration structure using default build flags
+	OptixAccelBuildOptions accelOptions = {};
+	accelOptions.buildFlags = OPTIX_BUILD_FLAG_NONE;
+	accelOptions.operation = OPTIX_BUILD_OPERATION_BUILD;
+
+	// Optix fills this with the required allocation sizes
+	OptixAccelBufferSizes gasBufferSizes = {};
+
+	optixResult = optixAccelComputeMemoryUsage(
+		optixContext,
+		&accelOptions,
+		&triangleInput,
+		1, // number of build inputs
+		&gasBufferSizes
+	);
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX GAS memory query failed: ") +optixGetErrorString(optixResult));
+	}
+
+	// Scratch space used whiel building the GAS
+	std::cout << "GAS temporary memory: " << gasBufferSizes.tempSizeInBytes << " bytes." << std::endl;
+	// Storage for the completed GAS, retained while tracing
+	std::cout << "GAS output memory: " << gasBufferSizes.outputSizeInBytes << " bytes." << std::endl;
+
+	//////////////////////////////////
+	// Create GAS using queried size info from above
+	//////////////////////////////////
+
+	// Allocate buffers
+	// Allocate the temporary construction workspace
+	cudaResult = cudaMalloc(&dev_gasTempBuffer, gasBufferSizes.tempSizeInBytes); //gasBufferSizes was populated from the stage above
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("GAS temporary allocation failed: ") +cudaGetErrorString(cudaResult));
+	}
+
+	// Allocate storage for completed GAS
+	cudaResult = cudaMalloc(&dev_gasOutputBuffer, gasBufferSizes.outputSizeInBytes);
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("GAS output allocation failed: ") +cudaGetErrorString(cudaResult));
+	}
+
+	//Build the GAS
+	//Build using the same optiosn and triangle description as the size query
+	optixResult = optixAccelBuild(
+		optixContext,
+		nullptr, // use the default CUDA stream
+		&accelOptions,
+		&triangleInput,
+		1, //one build input
+		reinterpret_cast<CUdeviceptr>(dev_gasTempBuffer),
+		gasBufferSizes.tempSizeInBytes,
+		reinterpret_cast<CUdeviceptr>(dev_gasOutputBuffer),
+		gasBufferSizes.outputSizeInBytes, 
+		&gasHandle, // OptiX writes the resulting handle here
+		nullptr, // No optional post-build properties requested
+		0 // Number of the properties
+	);
+
+	if (optixResult != OPTIX_SUCCESS) {
+		throw std::runtime_error(std::string("OptiX GAS build failed: ") +optixGetErrorString(optixResult));
+	}
+
+	// Wait for the GPU build to finish before releasing its workspace
+	cudaResult = cudaDeviceSynchronize();
+	checkCuda(cudaResult, "GAS build synchronization failed");
+
+	// Construction is complete, so the temporary workspace is no longer needed
+	cudaResult = cudaFree(dev_gasTempBuffer);
+	if (cudaResult != cudaSuccess) {
+		throw std::runtime_error(std::string("GAS temporary buffer cleanup failed: ") +cudaGetErrorString(cudaResult));
+	}
+	dev_gasTempBuffer = nullptr;
+
+	std::cout << "Optix test triangle GAS built." << std::endl;
+
+	//////////////////////////////////
 	// Launch pipeline
 	//////////////////////////////////
 	//std::cout << "Before optixLaunch" << std::endl; //DEBUGUGUUGGUGUGG
@@ -398,6 +551,34 @@ void initOptixContext() {
 }
 
 void destroyOptixContext() {
+	// Release gas tempbuffer
+	if (dev_gasTempBuffer != nullptr) {
+		cudaError_t result = cudaFree(dev_gasTempBuffer);
+		if (result != cudaSuccess) {
+			throw std::runtime_error(std::string("GAS temporary buffer cleanup failed: ") +cudaGetErrorString(result));
+		}
+		dev_gasTempBuffer = nullptr;
+	}
+
+	// All GPU work using the GAS must finish before the allocation is freed, our current test already synchronizes before cleanup
+	if (dev_gasOutputBuffer != nullptr) {
+		cudaError_t result = cudaFree(dev_gasOutputBuffer);
+		if (result != cudaSuccess) {
+			throw std::runtime_error(std::string("GAS output buffer cleanup failed: ") +cudaGetErrorString(result));
+		}
+		dev_gasOutputBuffer = nullptr;
+		gasHandle = 0;
+	}
+
+	// Release test triangle GPU vertex allocation
+	if (dev_testVerticies != nullptr) {
+		cudaError_t result = cudaFree(dev_testVerticies);
+		if (result != cudaSuccess) {
+			throw std::runtime_error(std::string("Triangle vertex cleanup failed: ") +cudaGetErrorString(result));
+		}
+		dev_testVerticies = nullptr;
+	}
+
 	// Release miss record
 	if (dev_missRecord != nullptr) {
 		cudaError_t result = cudaFree(dev_missRecord);
