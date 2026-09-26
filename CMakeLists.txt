@@ -58,6 +58,7 @@ set(headers
     src/sceneStructs.h
     src/utilities.h
     src/optixSetup.h
+    src/optixLaunchParams.h
 )
 
 set(sources

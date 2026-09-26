@@ -17,8 +17,11 @@
 #include "utilities.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "optixSetup.h"
 
 #define ERRORCHECK 1
+#define USE_OPTIX 1
+#define TEST_OPTIX_NORMALS 0
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -316,6 +319,29 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
     }
 }
 
+//Reads OptiX results and writes a normal based color into each path
+__global__ void shadeOptixNormals(int numPaths, const ShadeableIntersection* intersections, PathSegment* paths) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= numPaths) {
+        return;
+    }
+
+    const ShadeableIntersection& hit = intersections[index];
+    
+    if (hit.t > 0.0f) {
+        // Map normal components from [-1,1] into display colors [0,1]
+        paths[index].color = 0.5f * (hit.surfaceNormal + glm::vec3(1.0));
+    }
+    else {
+        //Rays that miss the triangle produce a black background
+        paths[index].color = glm::vec3(0.0f);
+    }
+    
+    // This diagnostic finishes after the first intersection
+    paths[index].remainingBounces = 0;
+}
+
 /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton
  * of memory management
@@ -323,7 +349,16 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
 void pathtrace(uchar4* pbo, int frame, int iter)
 {
     const int traceDepth = hst_scene->state.traceDepth;
-    const Camera& cam = hst_scene->state.camera;
+    //const Camera& cam = hst_scene->state.camera;
+    //Make a local copy so the diagnostic doesn't modify the scene camera
+    Camera cam = hst_scene->state.camera;
+#if USE_OPTIX
+        cam.position = glm::vec3(0.f, 0.f, 3.f);
+        cam.lookAt = glm::vec3(0.0f);
+        cam.view = glm::vec3(0.f, 0.f, -1.f);
+        cam.up = glm::vec3(0.f, 1.f, 0.f);
+        cam.right = glm::vec3(1.0f, 0.f, 0.f);
+#endif
     const int pixelcount = cam.resolution.x * cam.resolution.y;
 
     // 2D block for generating ray from camera
@@ -366,69 +401,125 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     // TODO: perform one iteration of path tracing
 
+#if USE_OPTIX && !TEST_OPTIX_NORMALS
+    //Upload once at the start of accumulation
+    if (iter == 1) {
+        if (hst_scene->materials.size() < 2) {
+            throw std::runtime_error("The OptiX bounce test needs two material slots");
+        }
+
+        Material testMaterials[2] = {};
+
+        // Material 0: green diffuse surface
+        testMaterials[0].color = glm::vec3(0.2f, 0.8f, 0.3f);
+        testMaterials[0].emittance = 0.0f;
+
+        // Material 1: white emitter.
+        testMaterials[1].color = glm::vec3(1.0f);
+        testMaterials[1].emittance = 1.0f;
+
+        cudaError_t result = cudaMemcpy(dev_materials, testMaterials, sizeof(testMaterials), cudaMemcpyHostToDevice);
+        if (result != cudaSuccess) {
+            throw std::runtime_error(cudaGetErrorString(result));
+        }
+    }
+#endif
+
     generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths);
     checkCUDAError("generate camera ray");
 
-    int depth = 0;
-    PathSegment* dev_path_end = dev_paths + pixelcount;
-    int num_paths = dev_path_end - dev_paths;
-    int original_num_paths = num_paths;
+#if USE_OPTIX && TEST_OPTIX_NORMALS
+        //Every pixel has one primary path before any compaction
+        launchOptixIntersections(dev_paths, dev_intersections, pixelcount);
 
-    // --- PathSegment Tracing Stage ---
-    // Shoot ray into scene, bounce between objects, push shading chunks
+        const int numBlocks = (pixelcount + blockSize1d - 1) / blockSize1d;
 
-    //bool iterationComplete = false;
-    while (num_paths > 0)
-    {
-        // clean shading chunks
-        cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
+        //Read the intersection array written by Optix
+        shadeOptixNormals << <numBlocks, blockSize1d >> > (pixelcount, dev_intersections, dev_paths);
+        checkCUDAError("shade OptiX normals");
 
-        // tracing
-        dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
-        computeIntersections<<<numblocksPathSegmentTracing, blockSize1d>>> (
-            depth,
-            num_paths,
-            dev_paths,
-            dev_geoms,
-            hst_scene->geoms.size(),
-            dev_intersections
-        );
-        checkCUDAError("trace one bounce");
-        cudaDeviceSynchronize();
-        depth++;
+        //Accumulate all primary path colors before any paths are removed
+        //Adds each path's color to dev_image using its pixelIndex
+        finalGather << <numBlocks, blockSize1d >> > (pixelcount, dev_image, dev_paths);
+        checkCUDAError("gather OptiX diagnostic");
 
-        // TODO:
-        // --- Shading Stage ---
-        // Shade path segments based on intersections and generate new rays by
-        // evaluating the BSDF.
-        // Start off with just a big kernel that handles all the different
-        // materials you have in the scenefile.
-        // TODO: compare between directly shading the path segments and shading
-        // path segments that have been reshuffled to be contiguous in memory.
-
-        shadeFakeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
-            iter,
-            num_paths,
-            dev_intersections,
-            dev_paths,
-            dev_materials
-        );
-
-        auto start_0s = thrust::partition(thrust::device, dev_paths, dev_paths + num_paths, not_terminated());
-        num_paths = start_0s - dev_paths; // TODO: should be based off stream compaction results.
-
-        if (guiData != NULL)
-        {
-            guiData->TracedDepth = depth;
+        if (guiData != nullptr) {
+            guiData->TracedDepth = 1;
         }
-    }
+#else
+        int depth = 0;
+        PathSegment* dev_path_end = dev_paths + pixelcount;
+        int num_paths = dev_path_end - dev_paths;
+        int original_num_paths = num_paths;
 
-    // Assemble this iteration and apply it to the image
-    dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
-    finalGather<<<numBlocksPixels, blockSize1d>>>(original_num_paths, dev_image, dev_paths);
+        // --- PathSegment Tracing Stage ---
+        // Shoot ray into scene, bounce between objects, push shading chunks
 
-    ///////////////////////////////////////////////////////////////////////////
+        //bool iterationComplete = false;
+        while (num_paths > 0)
+        {
+            // Save the number entering this intersection and shading pass
+            const int pathsBeforeBounce = num_paths;
 
+            // clean shading chunks
+            cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
+
+            // tracing
+            dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
+
+#if USE_OPTIX
+            launchOptixIntersections(dev_paths, dev_intersections, num_paths);
+#else
+            computeIntersections << <numblocksPathSegmentTracing, blockSize1d >> > (
+                depth,
+                num_paths,
+                dev_paths,
+                dev_geoms,
+                hst_scene->geoms.size(),
+                dev_intersections
+                );
+#endif
+            checkCUDAError("trace one bounce");
+            cudaDeviceSynchronize();
+            depth++;
+
+            // TODO:
+            // --- Shading Stage ---
+            // Shade path segments based on intersections and generate new rays by
+            // evaluating the BSDF.
+            // Start off with just a big kernel that handles all the different
+            // materials you have in the scenefile.
+            // TODO: compare between directly shading the path segments and shading
+            // path segments that have been reshuffled to be contiguous in memory.
+
+            shadeFakeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
+                iter,
+                num_paths,
+                dev_intersections,
+                dev_paths,
+                dev_materials
+                );
+            checkCUDAError("shade one bounce");
+
+            auto start_0s = thrust::partition(thrust::device, dev_paths, dev_paths + num_paths, not_terminated());
+            num_paths = start_0s - dev_paths; // TODO: should be based off stream compaction results.
+
+            if (iter == 1) {
+                std::cout << "Pass " << depth<< ": traced " << pathsBeforeBounce<< ", surviving " << num_paths<< std::endl;
+            }
+
+            if (guiData != nullptr)
+            {
+                guiData->TracedDepth = depth;
+            }
+        }
+
+        // Assemble this iteration and apply it to the image
+        dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
+        finalGather << <numBlocksPixels, blockSize1d >> > (original_num_paths, dev_image, dev_paths);
+        checkCUDAError("gather paths");
+        ///////////////////////////////////////////////////////////////////////////
+#endif
     // Send results to OpenGL buffer for rendering
     sendImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, iter, dev_image);
 

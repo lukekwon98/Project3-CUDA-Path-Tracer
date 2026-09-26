@@ -22,6 +22,8 @@
 
 #include "optixLaunchParams.h"
 
+#define TEST_LAUNCH 0
+
 //PTX: Intermediate GPu instructions generated from optixPrograms.cu - generated on build, not runtime (created by specifying __raygen__rg and tweaking cmakeslists)
 //Module: OPtiX compiles the PTX into a module containing the GPU program
 //Program group: Selects __raygen__rg from that module as the raygen program
@@ -158,7 +160,6 @@ void initOptixContext() {
 	// Load the OptiX driver API and populate its function table
 	//////////////////////////////////
 	OptixResult optixResult = optixInit();
-
 	if (optixResult != OPTIX_SUCCESS) {
 		throw std::runtime_error(std::string("Optix initialization failed. Eror code: ") + std::to_string(static_cast<int>(optixResult)));
 	}
@@ -457,9 +458,21 @@ void initOptixContext() {
 	// Single Triangle Test
 	//////////////////////////////////
 	const float3 vertices[] = {
-	make_float3(-1.0f, -1.0f, 0.0f),
-	make_float3(1.0f, -1.0f, 0.0f),
-	make_float3(0.0f,  1.0f, 0.0f)
+		// Primitive 0: original diffuse triangle, facing +Z.
+		make_float3(-1.0f, -1.0f, 0.0f),
+		make_float3(1.0f, -1.0f, 0.0f),
+		make_float3(0.0f,  1.0f, 0.0f),
+
+		// Primitive 1: first half of a large light square at z = 4.
+		// Winding faces -Z, toward the diffuse triangle.
+		make_float3(-10.0f, -10.0f, 4.0f),
+		make_float3(10.0f,  10.0f, 4.0f),
+		make_float3(10.0f, -10.0f, 4.0f),
+
+		// Primitive 2: second half of the light square.
+		make_float3(-10.0f, -10.0f, 4.0f),
+		make_float3(-10.0f,  10.0f, 4.0f),
+		make_float3(10.0f,  10.0f, 4.0f)
 	};
 
 	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_testVerticies), sizeof(vertices));
@@ -491,7 +504,7 @@ void initOptixContext() {
 	// Each vertex contains 3 floats: x,y,z
 	triangleInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
 	triangleInput.triangleArray.vertexStrideInBytes = sizeof(float3);
-	triangleInput.triangleArray.numVertices = 3;
+	triangleInput.triangleArray.numVertices = static_cast<unsigned int>(sizeof(vertices) / sizeof(vertices[0]));
 
 	// Optix expects a CPU array of GPU buffer addresses
 	// With no motion blur, one address is enough
@@ -606,8 +619,7 @@ std::cout << "CPU GAS handle: " << static_cast<unsigned long long>(gasHandle) <<
 //////////////////////////////////
 // Launch pipeline
 //////////////////////////////////
-//std::cout << "Before optixLaunch" << std::endl; //DEBUGUGUUGGUGUGG
-
+#if TEST_LAUNCH
 optixResult = optixLaunch(
 	optixPipeline,
 	nullptr, //Default CUDA stream
@@ -616,17 +628,60 @@ optixResult = optixLaunch(
 	&sbt, //CPU description pointing to our GPU SBT record
 	1, 1, 1 //Launch dimensions (width, height, depth) - OptiX invokes raygen for each launch index, 1, 1, 1 means exactly one invocation
 );
-//std::cout << "optixLaunch returned: " << optixGetErrorString(optixResult) << std::endl; //DEBUGUGUGGUGUGUGUGUG
 checkOptix(optixResult, "OptiX launch failed");
 
 // Launching is asynch, success above does not mean GPU work finished
 // Wait for completion, detect execution errors, and flush GPU printf output
-//std::cout << "Before synchronization" << std::endl;//DEBUGUGUGUGUGUGUG
 cudaResult = cudaDeviceSynchronize();
-//std::cout << "Synchronization returned: "<< cudaGetErrorString(cudaResult) << std::endl; //DEBGUUGUGGUGUGUGU
 checkCuda(cudaResult, "OptiX GPU execution failed");
 
 std::cout << "OptiX test launch completed." << std::endl;
+#endif
+}
+
+// Preparing bridge between CUDA renderer and OptiX - passes the GPu buffer addresses, GAS handle, and path count to OptiX
+void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* intersections, int numPaths) {
+	// Nothing to launch once all paths have terminated
+	if (numPaths <= 0){
+		return;
+	}
+
+	// Must have been created during initialization
+	if (optixPipeline == nullptr || dev_launchParams == nullptr) {
+		throw std::runtime_error("OptiX has not been initialized");
+	}
+	if (paths == nullptr || intersections == nullptr) {
+		throw std::runtime_error("OptiX received a null ray or intersection buffer");
+	}
+
+	//Prepare the launch's addresses and active-path count on the CPU
+	//Here are my GPu rays, here is where their intersection results should go, and here is how many rays to process
+	LaunchParams launchParams = {};
+	launchParams.gasHandle = gasHandle;
+	launchParams.paths = paths;
+	launchParams.intersections = intersections;
+	launchParams.numPaths = static_cast<unsigned int>(numPaths);
+
+	//Reuse the parameter allocation created by initOptixContext()
+	cudaError_t cudaResult = cudaMemcpy(dev_launchParams, &launchParams, sizeof(LaunchParams), cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Launch parameter upload failed");
+
+	// One raygen invocation per active path
+	OptixResult optixResult = optixLaunch(
+		optixPipeline,
+		nullptr,
+		reinterpret_cast<CUdeviceptr>(dev_launchParams),
+		sizeof(LaunchParams),
+		&sbt,
+		launchParams.numPaths,
+		1,
+		1
+	);
+	checkOptix(optixResult, "OptiX intersection launch failed");
+
+	// Catch GPU execution errors during initial integration
+	cudaResult = cudaDeviceSynchronize();
+	checkCuda(cudaResult, "OptiX intersection execution failed");
 }
 
 void destroyOptixContext() {
