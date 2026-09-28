@@ -5,6 +5,7 @@
 #include "optixLaunchParams.h"
 #include "sceneStructs.h" // Members of Pathsegment and ShadeableIntersection
 #include <float.h>
+#include <glm/glm.hpp>
 
 #define TRIANGLE_TEST 0
 #define SETUP_TEST 0
@@ -82,26 +83,38 @@ extern "C" __global__ void __raygen__rg() {
 
 // Runs when traversal finds the closest accepted intersection
 extern "C" __global__ void __closesthit__ch() {
-	//Writes dev_intersections[index]: hit distance and normal
-	//Hit/miss programs can retrieve the originating launch index
-	const unsigned int index = optixGetLaunchIndex().x;
-	ShadeableIntersection& result = params.intersections[index];
+	const unsigned int index = optixGetLaunchIndex().x; //index'th thread(ray)
+	ShadeableIntersection& result = params.intersections[index]; //index'th intersection
 
-	//In closest-hit, this returns the selected intersection's ray parameter
-	// Temporary assignment: use material 0 from the renderer's material array.
 	result.t = optixGetRayTmax();
-	
-	const unsigned int primitiveIndex = optixGetPrimitiveIndex(); // identifies the intersected primitive within the build input
-	result.materialId = (primitiveIndex == 0) ? 0 : 1;
 
-	//Known normal for the hardcoded test triangle
+	const unsigned int primitiveIndex = optixGetPrimitiveIndex(); //got index of triangle that was hit
+	const uint3 triangle = params.triangles[primitiveIndex];  //the triangle the ray hit, has 3 vertex indices, not 3 positions
+
+	const float3 a = params.vertices[triangle.x]; 
+	const float3 b = params.vertices[triangle.y];
+	const float3 c = params.vertices[triangle.z];
+
+	const glm::vec3 p0(a.x, a.y, a.z);
+	const glm::vec3 p1(b.x, b.y, b.z);
+	const glm::vec3 p2(c.x, c.y, c.z);
+
+	//Geometric normal perpendicular to the triangle
+	glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+
+	//Orient normal against incoming ray
 	const float3 direction = optixGetWorldRayDirection();
+	const glm::vec3 rayDirection(direction.x, direction.y, direction.z);
 
-	result.surfaceNormal.x = 0.0f;
-	result.surfaceNormal.y = 0.0f;
-	result.surfaceNormal.z = direction.z > 0.0f ? -1.0f : 1.0f;
+	if (glm::dot(normal, rayDirection) > 0.0f) {
+		normal = -normal;
+	}
 
-	//printf("Triangle hit\n");
+	result.surfaceNormal = normal;
+
+	//Temporary: all box triangles use renderer material 0
+	result.materialId = 0;
+
 }
 
 // Runs when traversal finds no intersection

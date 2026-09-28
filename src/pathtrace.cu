@@ -21,7 +21,7 @@
 
 #define ERRORCHECK 1
 #define USE_OPTIX 1
-#define TEST_OPTIX_NORMALS 0
+#define TEST_OPTIX_NORMALS 1
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -353,11 +353,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     //Make a local copy so the diagnostic doesn't modify the scene camera
     Camera cam = hst_scene->state.camera;
 #if USE_OPTIX
-        cam.position = glm::vec3(0.f, 0.f, 3.f);
-        cam.lookAt = glm::vec3(0.0f);
-        cam.view = glm::vec3(0.f, 0.f, -1.f);
-        cam.up = glm::vec3(0.f, 1.f, 0.f);
-        cam.right = glm::vec3(1.0f, 0.f, 0.f);
+    cam.position = glm::vec3(2.0f, 1.5f, 3.0f);
+    cam.lookAt = glm::vec3(0.0f);
+    cam.view = glm::normalize(cam.lookAt - cam.position);
+
+    const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+    cam.right = glm::normalize(glm::cross(cam.view, worldUp));
+    cam.up = glm::normalize(glm::cross(cam.right, cam.view));
 #endif
     const int pixelcount = cam.resolution.x * cam.resolution.y;
 

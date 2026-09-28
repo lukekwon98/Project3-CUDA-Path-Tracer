@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optix.h>
+#include <vector_types.h> //float3 and uint3
 
 // Launch parameters are data supplied for a launch, accessible to its GPU programs.
 // Basically a struct of input data that we provide to the GPU programs
@@ -20,4 +21,7 @@ struct LaunchParams {
 
 	// Number of active paths for this launch
 	unsigned int numPaths;
+
+	const float3* vertices;
+	const uint3* triangles;
 };

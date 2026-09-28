@@ -22,6 +22,9 @@
 
 #include "optixLaunchParams.h"
 
+#include <vector>
+#include "gltfLoader.h"
+
 #define TEST_LAUNCH 0
 
 //PTX: Intermediate GPu instructions generated from optixPrograms.cu - generated on build, not runtime (created by specifying __raygen__rg and tweaking cmakeslists)
@@ -131,8 +134,8 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	}
 
 	//GPU allocation containing the three vertices of a test triangle
-	float3* dev_testVerticies = nullptr;
-
+	float3* dev_meshVertices = nullptr;
+	uint3* dev_meshIndices = nullptr;
 
 	//Error printing Helpers
 	void checkCuda(cudaError_t result, const char* operation) {
@@ -148,7 +151,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	}
 }
 
-void initOptixContext() {
+void initOptixContext(const std::vector<MeshData>& meshes) {
 	// Ensure Cuda is initialized for the current device, passing nullptr frees no allocation
 	// Stop initialization if CUDA reports an error
 	cudaError_t cudaResult = cudaFree(nullptr);
@@ -455,36 +458,49 @@ void initOptixContext() {
 	sbt.hitgroupRecordCount = 1;
 
 	//////////////////////////////////
-	// Single Triangle Test
+	// Triangle Load
 	//////////////////////////////////
-	const float3 vertices[] = {
-		// Primitive 0: original diffuse triangle, facing +Z.
-		make_float3(-1.0f, -1.0f, 0.0f),
-		make_float3(1.0f, -1.0f, 0.0f),
-		make_float3(0.0f,  1.0f, 0.0f),
-
-		// Primitive 1: first half of a large light square at z = 4.
-		// Winding faces -Z, toward the diffuse triangle.
-		make_float3(-10.0f, -10.0f, 4.0f),
-		make_float3(10.0f,  10.0f, 4.0f),
-		make_float3(10.0f, -10.0f, 4.0f),
-
-		// Primitive 2: second half of the light square.
-		make_float3(-10.0f, -10.0f, 4.0f),
-		make_float3(-10.0f,  10.0f, 4.0f),
-		make_float3(10.0f,  10.0f, 4.0f)
-	};
-
-	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_testVerticies), sizeof(vertices));
-	if (cudaResult != cudaSuccess) {
-		throw std::runtime_error(std::string("Triangle vertex allocation failed: ") +cudaGetErrorString(cudaResult));
-	}
-	cudaResult = cudaMemcpy(dev_testVerticies, vertices, sizeof(vertices), cudaMemcpyHostToDevice);
-	if (cudaResult != cudaSuccess) {
-		throw std::runtime_error(std::string("Triangle vertex upload failed: ") +cudaGetErrorString(cudaResult));
+	if (meshes.size() != 1) {
+		throw std::runtime_error("Expected one mesh part for the box test");
 	}
 
-	std::cout << "OptiX test triangle vertices uploaded." << std::endl;
+	const MeshData& mesh = meshes.front();
+
+	if (mesh.positions.empty() || mesh.triangles.empty()) {
+		throw std::runtime_error("Mesh geometry is empty");
+	}
+
+	//Convert to explicit CUDA buffer element types
+	std::vector<float3> vertices;
+	vertices.reserve(mesh.positions.size());
+
+	for (const glm::vec3& p : mesh.positions) {
+		vertices.push_back(make_float3(p.x, p.y, p.z));
+	}
+
+	std::vector<uint3> triangles;
+	triangles.reserve(mesh.triangles.size());
+
+	for (const auto& t : mesh.triangles) {
+		triangles.push_back(make_uint3(t[0], t[1], t[2]));
+	}
+
+	const size_t vertexBytes = vertices.size() * sizeof(float3);
+	const size_t indexBytes = triangles.size() * sizeof(uint3);
+
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshVertices), vertexBytes);
+	checkCuda(cudaResult, "Mesh vertex allocation failed");
+
+	cudaResult = cudaMemcpy(dev_meshVertices, vertices.data(), vertexBytes, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Mesh vertex upload failed");
+
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshIndices), indexBytes);
+	checkCuda(cudaResult, "Mesh index allocation failed");
+
+	cudaResult = cudaMemcpy(dev_meshIndices, triangles.data(), indexBytes, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Mesh index upload failed");
+
+	std::cout << "Uploaded " << vertices.size() << " vertices and " << triangles.size() << " triangles\n";
 
 	//////////////////////////////////
 	// Describe the triangle and query the GAS(Geometry Acceleration Structure) memory requirements
@@ -492,7 +508,7 @@ void initOptixContext() {
 
 	// It's like glVertexAttribPointer
 	// Express GPU pointer using the address type expected by OptiX
-	CUdeviceptr vertexBuffer = reinterpret_cast<CUdeviceptr>(dev_testVerticies);
+	CUdeviceptr vertexBuffer = reinterpret_cast<CUdeviceptr>(dev_meshVertices);
 	
 	// One geometry-flags entry for one future hitgroup SBT record
 	// No need for a any-hit program for the test triangle
@@ -504,7 +520,7 @@ void initOptixContext() {
 	// Each vertex contains 3 floats: x,y,z
 	triangleInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
 	triangleInput.triangleArray.vertexStrideInBytes = sizeof(float3);
-	triangleInput.triangleArray.numVertices = static_cast<unsigned int>(sizeof(vertices) / sizeof(vertices[0]));
+	triangleInput.triangleArray.numVertices = static_cast<unsigned int>(vertices.size());
 
 	// Optix expects a CPU array of GPU buffer addresses
 	// With no motion blur, one address is enough
@@ -512,7 +528,11 @@ void initOptixContext() {
 	triangleInput.triangleArray.vertexBuffers = &vertexBuffer; //OptiX reads a GPU address stored in CPU memory, then uses the address to locate the vertices
 
 	//No index buffer - every consecutive group of three vertices forms a triangle
-	triangleInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_NONE;
+	//Tells Optix how to read the index buffer - each index triplet selects three vertices for one triangle
+	triangleInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
+	triangleInput.triangleArray.indexBuffer = reinterpret_cast<CUdeviceptr>(dev_meshIndices);
+	triangleInput.triangleArray.numIndexTriplets = static_cast<unsigned int>(triangles.size()); //12
+	triangleInput.triangleArray.indexStrideInBytes = sizeof(uint3);
 
 	// All geometry in this input uses one hitgroup SBT record - hitgroup record: a SBT record that selects the programs that handle ray intersections with taht geometry
 	triangleInput.triangleArray.numSbtRecords = 1;
@@ -595,23 +615,28 @@ if (cudaResult != cudaSuccess) {
 }
 dev_gasTempBuffer = nullptr;
 
-std::cout << "Optix test triangle GAS built." << std::endl;
+std::cout << "Optix mesh GAS built." << std::endl;
 
 //////////////////////////////////
 // Uplaod parameters after building the GAS
 //////////////////////////////////
-
 //Prepare the parameter values on the CPU
+#if TEST_LAUNCH
 LaunchParams launchParams = {};
 launchParams.gasHandle = gasHandle;
+launchParams.vertices = dev_meshVertices;
+launchParams.triangles = dev_meshIndices;
+#endif
 
 //Allocate a GPU buffer for those values
 cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_launchParams), sizeof(LaunchParams));
 checkCuda(cudaResult, "Launch parameter allocation failed");
 
+#if TEST_LAUNCH
 //Upload the parameters. This copies the handle, not the GAS itself
 cudaResult = cudaMemcpy(dev_launchParams, &launchParams, sizeof(LaunchParams), cudaMemcpyHostToDevice);
 checkCuda(cudaResult, "Launch parameter upload failed");
+#endif
 
 //Compare it with the value printed by raygen
 std::cout << "CPU GAS handle: " << static_cast<unsigned long long>(gasHandle) << std::endl;
@@ -658,6 +683,9 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 	//Here are my GPu rays, here is where their intersection results should go, and here is how many rays to process
 	LaunchParams launchParams = {};
 	launchParams.gasHandle = gasHandle;
+	launchParams.vertices = dev_meshVertices;
+	launchParams.triangles = dev_meshIndices;
+
 	launchParams.paths = paths;
 	launchParams.intersections = intersections;
 	launchParams.numPaths = static_cast<unsigned int>(numPaths);
@@ -711,13 +739,20 @@ void destroyOptixContext() {
 		gasHandle = 0;
 	}
 
-	// Release test triangle GPU vertex allocation
-	if (dev_testVerticies != nullptr) {
-		cudaError_t result = cudaFree(dev_testVerticies);
+	// Release mesh triangle GPU vertex allocation
+	if (dev_meshVertices != nullptr) {
+		cudaError_t result = cudaFree(dev_meshVertices);
 		if (result != cudaSuccess) {
 			throw std::runtime_error(std::string("Triangle vertex cleanup failed: ") + cudaGetErrorString(result));
 		}
-		dev_testVerticies = nullptr;
+		dev_meshVertices = nullptr;
+	}
+
+	// Release mesh triaingle GPU indices allocation
+	if (dev_meshIndices != nullptr) {
+		cudaError_t result = cudaFree(dev_meshIndices);
+		checkCuda(result, "Mesh index cleanup failed");
+		dev_meshIndices = nullptr;
 	}
 
 	// Release hit record

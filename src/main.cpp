@@ -26,6 +26,8 @@
 #include <sstream>
 #include <string>
 
+#include "gltfLoader.h"
+
 static std::string startTimeString;
 
 // For camera controls
@@ -202,7 +204,7 @@ void errorCallback(int error, const char* description)
     fprintf(stderr, "%s\n", description);
 }
 
-bool init()
+bool init(const std::vector<MeshData>& loadedMeshes)
 {
     glfwSetErrorCallback(errorCallback);
 
@@ -242,7 +244,7 @@ bool init()
     initVAO();
     initTextures();
     initCuda();
-    initOptixContext(); // Create the OptiX context after selecting the CUDA device, cuda device is selected with cudaGLSetDevice(0) in initCuda
+    initOptixContext(loadedMeshes); // Create the OptiX context after selecting the CUDA device, cuda device is selected with cudaGLSetDevice(0) in initCuda
     initPBO();
     GLuint passthroughProgram = initShader();
 
@@ -346,6 +348,14 @@ int main(int argc, char** argv)
 {
     startTimeString = currentTimeString();
 
+    std::vector<MeshData> loadedMeshes;
+
+    if (!loadGltf("../scenes/Box/Box.gltf", loadedMeshes)) {
+        return EXIT_FAILURE;
+    }
+
+    std::cout << "Returned " << loadedMeshes.size() << " mesh part(s)\n";
+
     if (argc < 2)
     {
         printf("Usage: %s SCENEFILE.json\n", argv[0]);
@@ -384,7 +394,7 @@ int main(int argc, char** argv)
     zoom = glm::length(cam.position - ogLookAt);
 
     // Initialize CUDA and GL components
-    init();
+    init(loadedMeshes);
 
     // Initialize ImGui Data
     InitImguiData(guiData);
