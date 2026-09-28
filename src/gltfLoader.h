@@ -12,6 +12,7 @@ struct MeshData {
 
 	//Index into the glTF material array, not the renderer's array
 	int gltfMaterialIndex = -1;
+	glm::vec4 baseColorFactor = glm::vec4(1.0f);
 };
 
 bool loadGltf(const std::string& filename, std::vector<MeshData>& output

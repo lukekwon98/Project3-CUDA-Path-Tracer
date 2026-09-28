@@ -22,6 +22,7 @@
 #define ERRORCHECK 1
 #define USE_OPTIX 1
 #define TEST_OPTIX_NORMALS 0
+#define TEST_MATERIALS 0
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -351,16 +352,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     const int traceDepth = hst_scene->state.traceDepth;
     //const Camera& cam = hst_scene->state.camera;
     //Make a local copy so the diagnostic doesn't modify the scene camera
-    Camera cam = hst_scene->state.camera;
-#if USE_OPTIX
-    cam.position = glm::vec3(2.0f, 1.5f, 3.0f);
-    cam.lookAt = glm::vec3(0.0f);
-    cam.view = glm::normalize(cam.lookAt - cam.position);
-
-    const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
-    cam.right = glm::normalize(glm::cross(cam.view, worldUp));
-    cam.up = glm::normalize(glm::cross(cam.right, cam.view));
-#endif
+    Camera& cam = hst_scene->state.camera;
     const int pixelcount = cam.resolution.x * cam.resolution.y;
 
     // 2D block for generating ray from camera
@@ -403,7 +395,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     // TODO: perform one iteration of path tracing
 
-#if USE_OPTIX && !TEST_OPTIX_NORMALS
+#if USE_OPTIX && !TEST_OPTIX_NORMALS && TEST_MATERIALS
     //Upload once at the start of accumulation
     if (iter == 1) {
         if (hst_scene->materials.size() < 2) {

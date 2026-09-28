@@ -367,6 +367,27 @@ int main(int argc, char** argv)
     // Load scene file
     scene = new Scene(sceneFile);
 
+    //Materials for OptiX box and emitter scene
+    if (loadedMeshes.size() != 1) {
+        std::cerr << "Expected one mesh part for the box test\n";
+        return EXIT_FAILURE;
+    }
+
+    scene->materials.clear();
+
+    Material boxMaterial = {};
+    boxMaterial.color = glm::vec3(loadedMeshes[0].baseColorFactor);
+    boxMaterial.emittance = 0.0f;
+    scene->materials.push_back(boxMaterial);
+
+    Material lightMaterial = {};
+    lightMaterial.color = glm::vec3(1.0f);
+    lightMaterial.emittance = 1.0f;
+    scene->materials.push_back(lightMaterial);
+
+    scene->materials[0] = boxMaterial;
+    scene->materials[1] = lightMaterial;
+
     //Create Instance for ImGUIData
     guiData = new GuiDataContainer();
 
@@ -445,8 +466,8 @@ void runCuda()
         cam.view = -glm::normalize(cameraPosition);
         glm::vec3 v = cam.view;
         glm::vec3 u = glm::vec3(0, 1, 0);//glm::normalize(cam.up);
-        glm::vec3 r = glm::cross(v, u);
-        cam.up = glm::cross(r, v);
+        glm::vec3 r = glm::normalize(glm::cross(v, u));
+        cam.up = glm::normalize(glm::cross(r, v));
         cam.right = r;
 
         cam.position = cameraPosition;
@@ -528,7 +549,7 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
 
 void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
 {
-    if (xpos == lastX || ypos == lastY)
+    if (xpos == lastX && ypos == lastY)
     {
         return; // otherwise, clicking back into window causes re-start
     }
@@ -538,7 +559,7 @@ void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
         // compute new camera parameters
         phi -= (xpos - lastX) / width;
         theta -= (ypos - lastY) / height;
-        theta = std::fmax(0.001f, std::fmin(theta, PI));
+        theta = std::fmax(0.001f, std::fmin(theta, PI - 0.001f));
         camchanged = true;
     }
     else if (rightMousePressed)

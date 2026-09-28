@@ -283,6 +283,32 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 			meshData.triangles = std::move(meshTriangles);
 			meshData.gltfMaterialIndex = primitive.material;
 
+			if (primitive.material >= 0) {
+				if (static_cast<size_t>(primitive.material) >= model.materials.size()) {
+					std::cerr << "Invalid material index\n";
+					return false;
+				}
+
+				//get material property
+				const tinygltf::Material& material = model.materials.at(primitive.material);
+
+				//get base color from materials
+				const auto& color = material.pbrMetallicRoughness.baseColorFactor;
+
+				if (color.size() != 4) {
+					std::cerr << "Invalid base color factor\n";
+					return false;
+				}
+
+				meshData.baseColorFactor = glm::vec4(static_cast<float>(color[0]), static_cast<float>(color[1]), static_cast<float>(color[2]), static_cast<float>(color[3]));
+			}
+
+			std::cout << "Base color: "
+				<< meshData.baseColorFactor.r << ", "
+				<< meshData.baseColorFactor.g << ", "
+				<< meshData.baseColorFactor.b << ", "
+				<< meshData.baseColorFactor.a << '\n';
+
 			loadedMeshes.push_back(std::move(meshData));
 		}
 	}
