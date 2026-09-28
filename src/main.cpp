@@ -204,7 +204,7 @@ void errorCallback(int error, const char* description)
     fprintf(stderr, "%s\n", description);
 }
 
-bool init(const std::vector<MeshData>& loadedMeshes)
+bool init(const std::vector<MeshData>& loadedMeshes, int lightMaterialId)
 {
     glfwSetErrorCallback(errorCallback);
 
@@ -244,7 +244,7 @@ bool init(const std::vector<MeshData>& loadedMeshes)
     initVAO();
     initTextures();
     initCuda();
-    initOptixContext(loadedMeshes); // Create the OptiX context after selecting the CUDA device, cuda device is selected with cudaGLSetDevice(0) in initCuda
+    initOptixContext(loadedMeshes, lightMaterialId); // Create the OptiX context after selecting the CUDA device, cuda device is selected with cudaGLSetDevice(0) in initCuda
     initPBO();
     GLuint passthroughProgram = initShader();
 
@@ -368,25 +368,30 @@ int main(int argc, char** argv)
     scene = new Scene(sceneFile);
 
     //Materials for OptiX box and emitter scene
-    if (loadedMeshes.size() != 1) {
-        std::cerr << "Expected one mesh part for the box test\n";
+    if (loadedMeshes.empty()) {
+        std::cerr << "No mesh parts loaded\n";
         return EXIT_FAILURE;
     }
 
+    //renderer's material array
     scene->materials.clear();
 
-    Material boxMaterial = {};
-    boxMaterial.color = glm::vec3(loadedMeshes[0].baseColorFactor);
-    boxMaterial.emittance = 0.0f;
-    scene->materials.push_back(boxMaterial);
+    for (MeshData& mesh : loadedMeshes) {
+        mesh.rendererMaterialId = int(scene->materials.size());
+
+        Material material = {};
+        material.color = glm::vec3(mesh.baseColorFactor);
+        material.emittance = 0.0f;
+
+        scene->materials.push_back(material);
+    }
+
+    const int lightMaterialId = int(scene->materials.size());
 
     Material lightMaterial = {};
     lightMaterial.color = glm::vec3(1.0f);
-    lightMaterial.emittance = 1.0f;
+    lightMaterial.emittance = 5.0f;
     scene->materials.push_back(lightMaterial);
-
-    scene->materials[0] = boxMaterial;
-    scene->materials[1] = lightMaterial;
 
     //Create Instance for ImGUIData
     guiData = new GuiDataContainer();
@@ -415,7 +420,7 @@ int main(int argc, char** argv)
     zoom = glm::length(cam.position - ogLookAt);
 
     // Initialize CUDA and GL components
-    init(loadedMeshes);
+    init(loadedMeshes, lightMaterialId);
 
     // Initialize ImGui Data
     InitImguiData(guiData);

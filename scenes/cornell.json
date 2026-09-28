@@ -33,7 +33,7 @@
     {
         "RES":[800,800],
         "FOVY":45.0,
-        "ITERATIONS":500,
+        "ITERATIONS":50000,
         "DEPTH":8,
         "FILE":"cornell",
         "EYE":[0.0,0.0,3.0],

@@ -152,7 +152,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	}
 }
 
-void initOptixContext(const std::vector<MeshData>& meshes) {
+void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) {
 	// Ensure Cuda is initialized for the current device, passing nullptr frees no allocation
 	// Stop initialization if CUDA reports an error
 	cudaError_t cudaResult = cudaFree(nullptr);
@@ -461,36 +461,36 @@ void initOptixContext(const std::vector<MeshData>& meshes) {
 	//////////////////////////////////
 	// Triangle Load
 	//////////////////////////////////
-	if (meshes.size() != 1) {
-		throw std::runtime_error("Expected one mesh part for the box test");
+	if (meshes.empty()) {
+		throw std::runtime_error("No mesh parts loaded");
 	}
-
-	const MeshData& mesh = meshes.front();
-
-	if (mesh.positions.empty() || mesh.triangles.empty()) {
-		throw std::runtime_error("Mesh geometry is empty");
-	}
-
-	//Convert to explicit CUDA buffer element types
-	//triangles[7]; // Vertex indies for triangle 7
-	//triangleMaterialIds[7]; //Material indices for triangle 7
 
 	std::vector<float3> vertices;
-	vertices.reserve(mesh.positions.size());
-	for (const glm::vec3& p : mesh.positions) {
-		vertices.push_back(make_float3(p.x, p.y, p.z));
-	}
-
 	std::vector<uint3> triangles;
-	triangles.reserve(mesh.triangles.size());
-	for (const auto& t : mesh.triangles) {
-		triangles.push_back(make_uint3(t[0], t[1], t[2]));
+	std::vector<int> triangleMaterialIds;
+
+	//for each mesh
+	for (const MeshData& mesh : meshes) {
+		if (mesh.positions.empty() || mesh.triangles.empty()) {
+			throw std::runtime_error("Mesh geometry is empty");
+		}
+		if (mesh.rendererMaterialId < 0) {
+			throw std::runtime_error("Mesh has no renderer material assigned");
+		}
+
+		//Where the mesh's vertices begin in the combined buffer
+		const unsigned int vertexOffset = (unsigned int)vertices.size();
+
+		for (const glm::vec3& p : mesh.positions) {
+			vertices.push_back(make_float3(p.x, p.y, p.z));
+		}
+
+		for (const auto& t : mesh.triangles) {
+			triangles.push_back(make_uint3(vertexOffset + t[0], vertexOffset + t[1], vertexOffset + t[2]));
+			triangleMaterialIds.push_back(mesh.rendererMaterialId);
+		}
 	}
 
-	// 1 renderer material ID per triangle
-	// All current triangles belong to diffuse box
-	std::vector<int> triangleMaterialIds(triangles.size(), 0); //initialized by num of triangles, with value 0
-	
 	// light above box
 	const unsigned int lightVertexStart = static_cast<unsigned int>(vertices.size());
 	vertices.push_back(make_float3(-2.0f, 3.0f, 1.0f));
@@ -499,21 +499,12 @@ void initOptixContext(const std::vector<MeshData>& meshes) {
 	vertices.push_back(make_float3(-2.0f, 3.0f, 5.0f));
 
 	//Two triangles forming light
-	triangles.push_back(make_uint3(
-		lightVertexStart,
-		lightVertexStart + 1,
-		lightVertexStart + 2
-	));
-
-	triangles.push_back(make_uint3(
-		lightVertexStart,
-		lightVertexStart + 2,
-		lightVertexStart + 3
-	));
+	triangles.push_back(make_uint3(lightVertexStart,lightVertexStart + 1,lightVertexStart + 2));
+	triangles.push_back(make_uint3(lightVertexStart,lightVertexStart + 2,lightVertexStart + 3));
 
 	//triangles renderer material: 1
-	triangleMaterialIds.push_back(1);
-	triangleMaterialIds.push_back(1);
+	triangleMaterialIds.push_back(lightMaterialId);
+	triangleMaterialIds.push_back(lightMaterialId);
 
 	const size_t vertexBytes = vertices.size() * sizeof(float3);
 	const size_t indexBytes = triangles.size() * sizeof(uint3);
