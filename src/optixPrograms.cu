@@ -112,8 +112,8 @@ extern "C" __global__ void __closesthit__ch() {
 
 	result.surfaceNormal = normal;
 
-	//Temporary: all box triangles use renderer material 0
-	result.materialId = 0;
+	//Triangle render materials
+	result.materialId = params.triangleMaterialIds[primitiveIndex];
 
 }
 

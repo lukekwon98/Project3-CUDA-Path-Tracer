@@ -136,6 +136,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	//GPU allocation containing the three vertices of a test triangle
 	float3* dev_meshVertices = nullptr;
 	uint3* dev_meshIndices = nullptr;
+	int* dev_triangleMaterialIds = nullptr;
 
 	//Error printing Helpers
 	void checkCuda(cudaError_t result, const char* operation) {
@@ -471,22 +472,52 @@ void initOptixContext(const std::vector<MeshData>& meshes) {
 	}
 
 	//Convert to explicit CUDA buffer element types
+	//triangles[7]; // Vertex indies for triangle 7
+	//triangleMaterialIds[7]; //Material indices for triangle 7
+
 	std::vector<float3> vertices;
 	vertices.reserve(mesh.positions.size());
-
 	for (const glm::vec3& p : mesh.positions) {
 		vertices.push_back(make_float3(p.x, p.y, p.z));
 	}
 
 	std::vector<uint3> triangles;
 	triangles.reserve(mesh.triangles.size());
-
 	for (const auto& t : mesh.triangles) {
 		triangles.push_back(make_uint3(t[0], t[1], t[2]));
 	}
 
+	// 1 renderer material ID per triangle
+	// All current triangles belong to diffuse box
+	std::vector<int> triangleMaterialIds(triangles.size(), 0); //initialized by num of triangles, with value 0
+	
+	// light above box
+	const unsigned int lightVertexStart = static_cast<unsigned int>(vertices.size());
+	vertices.push_back(make_float3(-2.0f, 3.0f, 1.0f));
+	vertices.push_back(make_float3(2.0f, 3.0f, 1.0f));
+	vertices.push_back(make_float3(2.0f, 3.0f, 5.0f));
+	vertices.push_back(make_float3(-2.0f, 3.0f, 5.0f));
+
+	//Two triangles forming light
+	triangles.push_back(make_uint3(
+		lightVertexStart,
+		lightVertexStart + 1,
+		lightVertexStart + 2
+	));
+
+	triangles.push_back(make_uint3(
+		lightVertexStart,
+		lightVertexStart + 2,
+		lightVertexStart + 3
+	));
+
+	//triangles renderer material: 1
+	triangleMaterialIds.push_back(1);
+	triangleMaterialIds.push_back(1);
+
 	const size_t vertexBytes = vertices.size() * sizeof(float3);
 	const size_t indexBytes = triangles.size() * sizeof(uint3);
+	const size_t materialBytes = triangleMaterialIds.size() * sizeof(int);
 
 	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshVertices), vertexBytes);
 	checkCuda(cudaResult, "Mesh vertex allocation failed");
@@ -499,6 +530,12 @@ void initOptixContext(const std::vector<MeshData>& meshes) {
 
 	cudaResult = cudaMemcpy(dev_meshIndices, triangles.data(), indexBytes, cudaMemcpyHostToDevice);
 	checkCuda(cudaResult, "Mesh index upload failed");
+
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_triangleMaterialIds),materialBytes);
+	checkCuda(cudaResult, "Triangle material allocation failed");
+
+	cudaResult = cudaMemcpy(dev_triangleMaterialIds, triangleMaterialIds.data(), materialBytes, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Triangle material upload failed");
 
 	std::cout << "Uploaded " << vertices.size() << " vertices and " << triangles.size() << " triangles\n";
 
@@ -685,6 +722,7 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 	launchParams.gasHandle = gasHandle;
 	launchParams.vertices = dev_meshVertices;
 	launchParams.triangles = dev_meshIndices;
+	launchParams.triangleMaterialIds = dev_triangleMaterialIds;
 
 	launchParams.paths = paths;
 	launchParams.intersections = intersections;
@@ -753,6 +791,13 @@ void destroyOptixContext() {
 		cudaError_t result = cudaFree(dev_meshIndices);
 		checkCuda(result, "Mesh index cleanup failed");
 		dev_meshIndices = nullptr;
+	}
+
+	// Release triangle material ids
+	if (dev_triangleMaterialIds != nullptr) {
+		cudaError_t result = cudaFree(dev_triangleMaterialIds);
+		checkCuda(result, "Triangle material cleanup failed");
+		dev_triangleMaterialIds = nullptr;
 	}
 
 	// Release hit record

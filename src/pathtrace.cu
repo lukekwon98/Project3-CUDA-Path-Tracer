@@ -21,7 +21,7 @@
 
 #define ERRORCHECK 1
 #define USE_OPTIX 1
-#define TEST_OPTIX_NORMALS 1
+#define TEST_OPTIX_NORMALS 0
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)

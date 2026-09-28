@@ -24,4 +24,5 @@ struct LaunchParams {
 
 	const float3* vertices;
 	const uint3* triangles;
+	const int* triangleMaterialIds;
 };
