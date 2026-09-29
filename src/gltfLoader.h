@@ -8,6 +8,7 @@
 
 struct MeshData {
 	std::vector<glm::vec3> positions; //World space
+	std::vector<glm::vec3> normals;
 	std::vector<std::array<std::uint32_t, 3>> triangles;
 
 	//Index into the glTF material array, not the renderer's array
@@ -17,8 +18,7 @@ struct MeshData {
 	glm::vec4 baseColorFactor = glm::vec4(1.0f);
 };
 
-bool loadGltf(const std::string& filename, std::vector<MeshData>& output
-);
+bool loadGltf(const std::string& filename, std::vector<MeshData>& output);
 
 //Box.gltf for reference
 //{

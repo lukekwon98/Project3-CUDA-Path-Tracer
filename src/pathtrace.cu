@@ -291,6 +291,11 @@ __global__ void shadeFakeMaterial(
                 glm::vec3 intersectPoint = getPointOnRay(pathSegments[idx].ray, intersection.t);
                 scatterRay(pathSegments[idx], intersectPoint, intersection.surfaceNormal, material, rng);
 
+                // if the path reaches the bounce limit without hitting a light, turn color to zero
+                if (pathSegments[idx].remainingBounces <= 0) {
+                    pathSegments[idx].color = glm::vec3(0.f);
+                    pathSegments[idx].remainingBounces = 0;
+                }
                 //float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f)); //Lambertian
                 //pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f; //Emission Reduction?
                 //pathSegments[idx].color *= u01(rng); // apply some noise because why not

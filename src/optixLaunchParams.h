@@ -23,6 +23,7 @@ struct LaunchParams {
 	unsigned int numPaths;
 
 	const float3* vertices;
+	const float3* normals;
 	const uint3* triangles;
 	const int* triangleMaterialIds;
 };

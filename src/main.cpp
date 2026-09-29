@@ -350,7 +350,7 @@ int main(int argc, char** argv)
 
     std::vector<MeshData> loadedMeshes;
 
-    if (!loadGltf("../scenes/Box/Box.gltf", loadedMeshes)) {
+    if (!loadGltf("../scenes/Suzanne/Suzanne.gltf", loadedMeshes)) {
         return EXIT_FAILURE;
     }
 

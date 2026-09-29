@@ -187,7 +187,7 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 
 				meshPositions.emplace_back(xyz[0], xyz[1], xyz[2]);
 
-				std::cout << "Position" << v << ": " << xyz[0] << ", " << xyz[1] << ", " << xyz[2] << "\n";
+				//std::cout << "Position" << v << ": " << xyz[0] << ", " << xyz[1] << ", " << xyz[2] << "\n";
 			}
 
 			for (glm::vec3& position : meshPositions) {
@@ -206,6 +206,77 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 					  << "    Position type: " << positions.type << '\n'
 					  << "    Position component type: " << positions.componentType << '\n';
 
+
+			std::vector<glm::vec3> meshNormals;
+
+			auto normalIt = primitive.attributes.find("NORMAL");
+
+			if (normalIt != primitive.attributes.end()) {
+				const tinygltf::Accessor& normals = model.accessors.at(normalIt->second);
+				if (normals.type != TINYGLTF_TYPE_VEC3 ||
+					normals.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
+					normals.sparse.isSparse ||
+					normals.bufferView < 0 ||
+					normals.count != positions.count) {
+					std::cerr << "Unsupported normal accessor\n";
+					return false;
+				}
+
+				std::cout << "    Normals: " << normals.count << '\n';
+
+				const tinygltf::BufferView& normalView = model.bufferViews.at(normals.bufferView);
+				const tinygltf::Buffer& normalBuffer = model.buffers.at(normalView.buffer);
+
+				const size_t normalElementBytes = 3 * sizeof(float);
+				const size_t normalStride = normalView.byteStride != 0 ? normalView.byteStride : normalElementBytes;
+
+				// Validate
+				if (normalView.byteOffset > normalBuffer.data.size() ||
+					normalView.byteLength > normalBuffer.data.size() - normalView.byteOffset ||
+					normals.byteOffset > normalView.byteLength ||
+					normalStride < normalElementBytes) {
+					std::cerr << "Invalid normal buffer layout\n";
+					return false;
+				}
+
+				const size_t availableNormalBytes = normalView.byteLength - normals.byteOffset;
+
+				if (normals.count > 0 && availableNormalBytes < normalElementBytes ||
+					normals.count - 1 >(availableNormalBytes - normalElementBytes) / normalStride) {
+					std::cerr << "Normal data exceeds buffer view\n";
+					return false;
+				}
+
+				const size_t normalStart = normalView.byteOffset + normals.byteOffset;
+
+				meshNormals.reserve(normals.count);
+
+				for (size_t v = 0; v < normals.count; v++) {
+					float xyz[3];
+
+					std::memcpy(xyz, normalBuffer.data.data() + normalStart + v * normalStride, sizeof(xyz));
+
+					meshNormals.push_back(glm::vec3(xyz[0], xyz[1], xyz[2]));
+				}
+
+				const glm::mat3 linearTransform = glm::mat3(instance.worldTransform);
+				if (glm::determinant(linearTransform) == 0.0f) {
+					std::cerr << "Cannot transform normasl with a singular transform\n";
+					return false;
+				}
+
+				const glm::mat3 normalMatrix = glm::transpose(glm::inverse(linearTransform)); //inverseTranspose undoes rotation, only scale
+				
+				for (glm::vec3& normal : meshNormals) {
+					glm::vec3 worldNormal = normalMatrix * normal;
+
+					if (glm::dot(worldNormal, worldNormal) == 0.0f) {
+						std::cerr << "Invalid zero-length normal\n";
+						return false;
+					}
+					normal = glm::normalize(worldNormal);
+				}
+			}
 
 			std::vector<std::array<std::uint32_t, 3>> meshTriangles;
 
@@ -227,7 +298,6 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				//Indexed triangles with unsigned 16 bit indices
 				if (primitive.mode != TINYGLTF_MODE_TRIANGLES ||
 					indices.type != TINYGLTF_TYPE_SCALAR ||
-					indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT ||
 					indices.sparse.isSparse ||
 					indices.bufferView < 0 ||
 					indices.count % 3 != 0) {
@@ -238,7 +308,25 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				const tinygltf::BufferView& indexView = model.bufferViews.at(indices.bufferView);
 				const tinygltf::Buffer& indexBuffer = model.buffers.at(indexView.buffer);
 
-				const size_t indexBytes = sizeof(std::uint16_t);
+				size_t indexBytes = 0;
+
+				switch (indices.componentType) {
+				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+					indexBytes = sizeof(std::uint8_t);
+					break;
+					
+				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+					indexBytes = sizeof(std::uint16_t);
+					break;
+
+				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+					indexBytes = sizeof(std::uint32_t);
+					break;
+
+				default:
+					std::cerr << "Unsupported index component type\n";
+					return false;
+				}
 
 				//Index data is tightly packed
 				if (indexView.byteStride != 0 ||
@@ -260,9 +348,35 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 
 				meshTriangles.reserve(indices.count / 3);
 
+				//GLTF has different types of requirements
 				for (size_t t = 0; t < indices.count / 3; ++t) {
-					std::uint16_t triangle[3]; //triangle is just a set of 3 shorts from indices
-					std::memcpy(triangle, indexBuffer.data.data() + indexStart + t * 3 * indexBytes, sizeof(triangle)); //copy info of 1 triangle into index
+					std::uint32_t triangle[3]; //triangle is just a set of 3 shorts from indices
+					for (size_t corner = 0; corner < 3; corner++) {
+						const unsigned char* source = indexBuffer.data.data() + indexStart + (t * 3 + corner) * indexBytes;
+
+						switch (indices.componentType) {
+						case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
+							std::uint8_t value;
+							std::memcpy(&value, source, sizeof(value));
+							triangle[corner] = value;
+							break;
+						}
+
+						case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+							std::uint16_t value;
+							std::memcpy(&value, source, sizeof(value));
+							triangle[corner] = value;
+							break;
+						}
+
+						case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+							std::uint32_t value;
+							std::memcpy(&value, source, sizeof(value));
+							triangle[corner] = value;
+							break;
+						}
+						}
+					}
 
 					if (triangle[0] >= positions.count ||
 						triangle[1] >= positions.count ||
@@ -271,15 +385,16 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 						return false;
 					}
 
-					meshTriangles.push_back({ static_cast<std::uint32_t>(triangle[0]), static_cast<std::uint32_t>(triangle[1]), static_cast<std::uint32_t>(triangle[2]) });
+					meshTriangles.push_back({ triangle[0], triangle[1], triangle[2] });
 
-					std::cout << "Triangle " << t << ": " << triangle[0] << ", " << triangle[1] << ", " << triangle[2] << '\n';
+					//std::cout << "Triangle " << t << ": " << triangle[0] << ", " << triangle[1] << ", " << triangle[2] << '\n';
 				}
 			}
 			std::cout << "Stored " << meshPositions.size() << " positions and " << meshTriangles.size() << " triangles\n";
 
 			MeshData meshData;
 			meshData.positions = std::move(meshPositions);
+			meshData.normals = std::move(meshNormals);
 			meshData.triangles = std::move(meshTriangles);
 			meshData.gltfMaterialIndex = primitive.material;
 

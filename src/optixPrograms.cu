@@ -86,12 +86,12 @@ extern "C" __global__ void __closesthit__ch() {
 	const unsigned int index = optixGetLaunchIndex().x; //index'th thread(ray)
 	ShadeableIntersection& result = params.intersections[index]; //index'th intersection
 
-	result.t = optixGetRayTmax();
+	result.t = optixGetRayTmax(); //noice
 
 	const unsigned int primitiveIndex = optixGetPrimitiveIndex(); //got index of triangle that was hit
 	const uint3 triangle = params.triangles[primitiveIndex];  //the triangle the ray hit, has 3 vertex indices, not 3 positions
 
-	const float3 a = params.vertices[triangle.x]; 
+	const float3 a = params.vertices[triangle.x]; //triangle holds indices to each vertex, x y z are each indices of a vertex 
 	const float3 b = params.vertices[triangle.y];
 	const float3 c = params.vertices[triangle.z];
 
@@ -102,6 +102,31 @@ extern "C" __global__ void __closesthit__ch() {
 	//Geometric normal perpendicular to the triangle
 	glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
 
+	const float3 na = params.normals[triangle.x];
+	const float3 nb = params.normals[triangle.y];
+	const float3 nc = params.normals[triangle.z];
+
+	const glm::vec3 n0(na.x, na.y, na.z);
+	const glm::vec3 n1(nb.x, nb.y, nb.z);
+	const glm::vec3 n2(nc.x, nc.y, nc.z);
+
+	//Use vertex noramls only when all three are present
+	if (glm::dot(n0, n0) > 0.0f && glm::dot(n1, n1) > 0.0f && glm::dot(n2, n2) > 0.0f) {
+		const float2 bary = optixGetTriangleBarycentrics();
+
+		const float w0 = 1.0f - bary.x - bary.y;
+		const float w1 = bary.x;
+		const float w2 = bary.y;
+
+		const glm::vec3 interpolatedNormal = w0 * n0 + w1 * n1 + w2 * n2;
+
+		if (glm::dot(interpolatedNormal, interpolatedNormal) > 0.0f) {
+			normal = glm::normalize(interpolatedNormal);
+		}
+	}
+
+	//Forced flat shading
+	//normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
 	//Orient normal against incoming ray
 	const float3 direction = optixGetWorldRayDirection();
 	const glm::vec3 rayDirection(direction.x, direction.y, direction.z);
@@ -114,7 +139,6 @@ extern "C" __global__ void __closesthit__ch() {
 
 	//Triangle render materials
 	result.materialId = params.triangleMaterialIds[primitiveIndex];
-
 }
 
 // Runs when traversal finds no intersection

@@ -135,6 +135,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 
 	//GPU allocation containing the three vertices of a test triangle
 	float3* dev_meshVertices = nullptr;
+	float3* dev_meshNormals = nullptr;
 	uint3* dev_meshIndices = nullptr;
 	int* dev_triangleMaterialIds = nullptr;
 
@@ -466,6 +467,7 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 	}
 
 	std::vector<float3> vertices;
+	std::vector<float3> vertexNormals;
 	std::vector<uint3> triangles;
 	std::vector<int> triangleMaterialIds;
 
@@ -485,6 +487,22 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 			vertices.push_back(make_float3(p.x, p.y, p.z));
 		}
 
+		if (!mesh.normals.empty() && mesh.normals.size() != mesh.positions.size()) {
+			throw std::runtime_error("Normal count does not match vertex count");
+		}
+
+		for (size_t v = 0; v < mesh.positions.size(); ++v) {
+			if (mesh.normals.empty()) {
+				// fallback for 0s will be implemented in closeset-hit
+				// if empty, closest hit will use the face normal
+				vertexNormals.push_back(make_float3(0.f, 0.f, 0.f));
+			}
+			else {
+				const glm::vec3& n = mesh.normals[v];
+				vertexNormals.push_back(make_float3(n.x, n.y, n.z));
+			}
+		}
+
 		for (const auto& t : mesh.triangles) {
 			triangles.push_back(make_uint3(vertexOffset + t[0], vertexOffset + t[1], vertexOffset + t[2]));
 			triangleMaterialIds.push_back(mesh.rendererMaterialId);
@@ -498,6 +516,11 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 	vertices.push_back(make_float3(2.0f, 3.0f, 5.0f));
 	vertices.push_back(make_float3(-2.0f, 3.0f, 5.0f));
 
+	// fallback for the 0s will be implemeneted in closest-hit
+	for (int v = 0; v < 4; ++v) {
+		vertexNormals.push_back(make_float3(0.f, 0.f, 0.f));
+	}
+
 	//Two triangles forming light
 	triangles.push_back(make_uint3(lightVertexStart,lightVertexStart + 1,lightVertexStart + 2));
 	triangles.push_back(make_uint3(lightVertexStart,lightVertexStart + 2,lightVertexStart + 3));
@@ -507,6 +530,7 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 	triangleMaterialIds.push_back(lightMaterialId);
 
 	const size_t vertexBytes = vertices.size() * sizeof(float3);
+	const size_t normalBytes = vertexNormals.size() * sizeof(float3);
 	const size_t indexBytes = triangles.size() * sizeof(uint3);
 	const size_t materialBytes = triangleMaterialIds.size() * sizeof(int);
 
@@ -515,6 +539,12 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 
 	cudaResult = cudaMemcpy(dev_meshVertices, vertices.data(), vertexBytes, cudaMemcpyHostToDevice);
 	checkCuda(cudaResult, "Mesh vertex upload failed");
+
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshNormals), normalBytes);
+	checkCuda(cudaResult, "Mesh normals allocation failed");
+
+	cudaResult = cudaMemcpy(dev_meshNormals, vertexNormals.data(), normalBytes, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Mesh normals upload failed");
 
 	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshIndices), indexBytes);
 	checkCuda(cudaResult, "Mesh index allocation failed");
@@ -660,36 +690,9 @@ launchParams.triangles = dev_meshIndices;
 cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_launchParams), sizeof(LaunchParams));
 checkCuda(cudaResult, "Launch parameter allocation failed");
 
-#if TEST_LAUNCH
-//Upload the parameters. This copies the handle, not the GAS itself
-cudaResult = cudaMemcpy(dev_launchParams, &launchParams, sizeof(LaunchParams), cudaMemcpyHostToDevice);
-checkCuda(cudaResult, "Launch parameter upload failed");
-#endif
-
 //Compare it with the value printed by raygen
 std::cout << "CPU GAS handle: " << static_cast<unsigned long long>(gasHandle) << std::endl;
 
-//////////////////////////////////
-// Launch pipeline
-//////////////////////////////////
-#if TEST_LAUNCH
-optixResult = optixLaunch(
-	optixPipeline,
-	nullptr, //Default CUDA stream
-	reinterpret_cast<CUdeviceptr>(dev_launchParams), //No GPU launch-parameter buffer (yet)
-	sizeof(LaunchParams), //Luanch-parameter buffer size
-	&sbt, //CPU description pointing to our GPU SBT record
-	1, 1, 1 //Launch dimensions (width, height, depth) - OptiX invokes raygen for each launch index, 1, 1, 1 means exactly one invocation
-);
-checkOptix(optixResult, "OptiX launch failed");
-
-// Launching is asynch, success above does not mean GPU work finished
-// Wait for completion, detect execution errors, and flush GPU printf output
-cudaResult = cudaDeviceSynchronize();
-checkCuda(cudaResult, "OptiX GPU execution failed");
-
-std::cout << "OptiX test launch completed." << std::endl;
-#endif
 }
 
 // Preparing bridge between CUDA renderer and OptiX - passes the GPu buffer addresses, GAS handle, and path count to OptiX
@@ -712,6 +715,7 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 	LaunchParams launchParams = {};
 	launchParams.gasHandle = gasHandle;
 	launchParams.vertices = dev_meshVertices;
+	launchParams.normals = dev_meshNormals;
 	launchParams.triangles = dev_meshIndices;
 	launchParams.triangleMaterialIds = dev_triangleMaterialIds;
 
@@ -723,6 +727,9 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 	cudaError_t cudaResult = cudaMemcpy(dev_launchParams, &launchParams, sizeof(LaunchParams), cudaMemcpyHostToDevice);
 	checkCuda(cudaResult, "Launch parameter upload failed");
 
+	//////////////////////////////////
+	// Launch pipeline
+	//////////////////////////////////
 	// One raygen invocation per active path
 	OptixResult optixResult = optixLaunch(
 		optixPipeline,
