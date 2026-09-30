@@ -60,7 +60,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
             newMaterial.color = glm::vec3(col[0], col[1], col[2]);
         }
         MatNameToID[name] = materials.size();
-        materials.emplace_back(newMaterial);
+        materials.push_back(newMaterial);
     }
     const auto& objectsData = data["Objects"];
     for (const auto& p : objectsData)

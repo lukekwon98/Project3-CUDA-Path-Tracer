@@ -180,7 +180,7 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 	options.logCallbackLevel = 4;
 
 	// Enable additional checks while debugging the setup
-	options.validationMode = OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_ALL;
+	options.validationMode = OPTIX_DEVICE_CONTEXT_VALIDATION_MODE_OFF;
 
 	// nullptr tells OptiX to use the current CUDA context, configured with &options, and writes the created handle into &optixContext.
 	// reusing existing optixREsult 
@@ -744,7 +744,7 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 	checkOptix(optixResult, "OptiX intersection launch failed");
 
 	// Catch GPU execution errors during initial integration
-	cudaResult = cudaDeviceSynchronize();
+	//cudaResult = cudaDeviceSynchronize();
 	checkCuda(cudaResult, "OptiX intersection execution failed");
 }
 

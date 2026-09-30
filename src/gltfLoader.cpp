@@ -77,21 +77,19 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 	//a gltf primitive is a drawable mesh section
 	//a gltf primitive is a group of geometry within a mesh that uses one material
 
+	// read .gltf file
 	bool loaded = loader.LoadASCIIFromFile(&model, &error, &warning, filename);
 
 	if (!warning.empty()) {
 		std::cerr << "glTF warning: " << warning << '\n';
 	}
-
 	if (!error.empty()) {
 		std::cerr << "glTF error: " << error << '\n';
 	}
-
 	if (!loaded) {
 		std::cerr << "Failed to load: " << filename << '\n';
 		return false;
 	}
-
 	std::cout << "Loaded: " << filename << '\n'
 		<< "Scenes: " << model.scenes.size() << '\n'
 		<< "Nodes: " << model.nodes.size() << '\n'
@@ -106,15 +104,17 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 		return false;
 	}
 
-	// Use the declared default scene, ro choose scene 0 if none is declared
+	// Use the declared default scene, or choose scene 0 if none is declared
 	const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
 	const tinygltf::Scene& gltfScene = model.scenes.at(sceneIndex);
 	std::vector<MeshInstance> instances;
 
 	for (int rootNode : gltfScene.nodes) {
+		//traverse scene graph to combine node transforms
 		traverseMesh(model, rootNode, glm::mat4(1.0f), instances);
 	}
 
+	// Decode and transform mesh data
 	//////////////////
 	// Model Loop
 	//////////////////
@@ -147,7 +147,11 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				return false;
 			}
 
-			// Accessor -> buffer view -> buffer
+			//////////////////
+			// Get positions using accessor
+			//////////////////
+
+			// Accessor -> buffer view & buffer, use buffer view to access buffer
 			const tinygltf::BufferView& view = model.bufferViews.at(positions.bufferView); //A specified region within a buffer
 			const tinygltf::Buffer& buffer = model.buffers.at(view.buffer); //Raw bytes loaded into memory
 
@@ -185,7 +189,7 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				//copy into xyz, buffer.data with offset start + v * stride, with increments of 1 to v
 				std::memcpy(xyz, buffer.data.data() + start + v * stride, sizeof(xyz));
 
-				meshPositions.emplace_back(xyz[0], xyz[1], xyz[2]);
+				meshPositions.push_back(glm::vec3(xyz[0], xyz[1], xyz[2]));
 
 				//std::cout << "Position" << v << ": " << xyz[0] << ", " << xyz[1] << ", " << xyz[2] << "\n";
 			}
@@ -206,7 +210,9 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 					  << "    Position type: " << positions.type << '\n'
 					  << "    Position component type: " << positions.componentType << '\n';
 
-
+			//////////////////
+			// Get normals
+			//////////////////
 			std::vector<glm::vec3> meshNormals;
 
 			auto normalIt = primitive.attributes.find("NORMAL");
@@ -251,6 +257,9 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 
 				meshNormals.reserve(normals.count);
 
+				//////////////////
+				// Normals Loop
+				//////////////////
 				for (size_t v = 0; v < normals.count; v++) {
 					float xyz[3];
 
@@ -278,6 +287,9 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				}
 			}
 
+			//////////////////
+			// Get Indices
+			//////////////////
 			std::vector<std::array<std::uint32_t, 3>> meshTriangles;
 
 			if (primitive.indices < 0) {
@@ -285,9 +297,6 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				return false;
 			}
 
-			//////////////////
-			// Indices Loop
-			//////////////////
 			if (primitive.indices >= 0) {
 				const tinygltf::Accessor& indices = model.accessors.at(primitive.indices);
 
@@ -392,6 +401,7 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 			}
 			std::cout << "Stored " << meshPositions.size() << " positions and " << meshTriangles.size() << " triangles\n";
 
+			// don't copy, just move mem ownership
 			MeshData meshData;
 			meshData.positions = std::move(meshPositions);
 			meshData.normals = std::move(meshNormals);

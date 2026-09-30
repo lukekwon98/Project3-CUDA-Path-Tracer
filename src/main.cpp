@@ -350,7 +350,9 @@ int main(int argc, char** argv)
 
     std::vector<MeshData> loadedMeshes;
 
-    if (!loadGltf("../scenes/Suzanne/Suzanne.gltf", loadedMeshes)) {
+    // loadGltf into loadedMeshes
+    bool loaded = loadGltf("../scenes/Suzanne/Suzanne.gltf", loadedMeshes);
+    if (loaded == false) {
         return EXIT_FAILURE;
     }
 
@@ -364,7 +366,7 @@ int main(int argc, char** argv)
 
     const char* sceneFile = argv[1];
 
-    // Load scene file
+    // Create scene file from Json
     scene = new Scene(sceneFile);
 
     //Materials for OptiX box and emitter scene
@@ -372,6 +374,10 @@ int main(int argc, char** argv)
         std::cerr << "No mesh parts loaded\n";
         return EXIT_FAILURE;
     }
+
+    //////////////////
+    // Populate scene materials from loaded loadedMeshes
+    //////////////////
 
     //renderer's material array
     scene->materials.clear();
@@ -434,7 +440,14 @@ int main(int argc, char** argv)
 
 void saveImage()
 {
+    if (iteration <= 0) {
+        return;
+    }
+
+    pathtraceReadback();
+
     float samples = iteration;
+
     // output image file
     Image img(width, height);
 
