@@ -29,8 +29,9 @@
 #define TEST_MATERIALS 0
 #define USE_PARTITION 0 // 0 no partition, 1 thrust, 2 cub, 3 fixed-size launches, no count readback
 #define SORT_MATERIALS 0
-//NOOOOOPE
+//Bulk moving things into raygen
 #define USE_RAYGEN_LOOP 1
+#define USE_RAYGEN_CAMERA 1
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -777,9 +778,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     // TODO: perform one iteration of path tracing
 
+#if !USE_RAYGEN_CAMERA
     generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths);
     checkCUDAError("generate camera ray");
-
+#endif
         int depth = 0;
         int num_paths = pixelcount;
         int original_num_paths = pixelcount;
@@ -797,7 +799,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_intersections,
             dev_materials,
             pixelcount,
-            iter);
+            iter,
+            cam,
+            traceDepth,
+            USE_RAYGEN_CAMERA != 0);
 
         if (guiData != nullptr) {
             // Exact maximum depth is not read back

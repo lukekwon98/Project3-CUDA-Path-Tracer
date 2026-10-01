@@ -11,6 +11,17 @@ struct PathSegment;
 struct ShadeableIntersection;
 struct Material;
 
+//Camera contains GLM types whose constructors trigger dynamic initialization, CUDA rejects this for the global __constant__ LaunchParams params
+struct RaygenCamera {
+	int width;
+	int height;
+	float3 position;
+	float3 view;
+	float3 up;
+	float3 right;
+	float2 pixelLength;
+};
+
 // Shared layout used by CPU code and OptiX GPU programs
 // The handle identifies the built acceleration structure. It doesn't contain the triangles or the GAS itself, only their GPU allocations
 struct LaunchParams {
@@ -32,4 +43,9 @@ struct LaunchParams {
 	PathSegment* outputPaths; // Write each completed path back for finalGather()
 	const Material* materials; //read material colors and emission during shading
 	int iteration; //seed the random generator for the current sample
+
+	//Also including camera
+	RaygenCamera camera;
+	int maxBounces;
+	int generateCameraRays; // 0 read existing paths, 1 generate in raygen
 };

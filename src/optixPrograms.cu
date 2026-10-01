@@ -174,6 +174,7 @@ glm::vec3 raygenSampleHemisphere( glm::vec3 normal, thrust::default_random_engin
         + sin(around) * over * perpendicularDirection2;
 }
 
+//__forceinline__ tells the compiler to inline the function into the caller rather than use an ordinary function call
 static __forceinline__ __device__
 void raygenShadeFakeMaterial(
     PathSegment& path,
@@ -216,6 +217,42 @@ void raygenShadeFakeMaterial(
     }
 }
 
+
+static __forceinline__ __device__
+PathSegment generateRaygenCameraPath(unsigned int index)
+{
+    RaygenCamera& cam = params.camera;
+
+    int pixelIndex = (int)(index);
+    int x = pixelIndex % cam.width;
+    int y = pixelIndex / cam.width;
+
+    thrust::default_random_engine rng = raygenMakeRandomEngine(params.iteration, pixelIndex, 0);
+    thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+
+    float xJitter = u01(rng);
+    float yJitter = u01(rng);
+
+    //restriction due to initialization of global __constant__ variable
+    const glm::vec3 position(cam.position.x, cam.position.y, cam.position.z);
+    const glm::vec3 view(cam.view.x, cam.view.y, cam.view.z);
+    const glm::vec3 up(cam.up.x, cam.up.y, cam.up.z);
+    const glm::vec3 right(cam.right.x, cam.right.y, cam.right.z);
+
+    PathSegment path{};
+
+    path.ray.origin = position;
+    path.ray.direction = glm::normalize(view
+        - right * cam.pixelLength.x * ((float)(x + xJitter) - (float)(cam.width) * 0.5f)
+        - up * cam.pixelLength.y * ((float)(y + yJitter) - (float)(cam.height) * 0.5f));
+
+    path.color = glm::vec3(1.0f);
+    path.pixelIndex = pixelIndex;
+    path.remainingBounces = params.maxBounces;
+
+    return path;
+}
+
 extern "C" __global__ void __raygen__pathtrace()
 {
     const unsigned int index = optixGetLaunchIndex().x;
@@ -225,7 +262,15 @@ extern "C" __global__ void __raygen__pathtrace()
     }
 
     // Read once, all bounce updates operate on this local path.
-    PathSegment path = params.paths[index];
+    PathSegment path;
+
+    // toggle
+    if (params.generateCameraRays != 0) {
+        path = generateRaygenCameraPath(index);
+    }
+    else {
+        path = params.paths[index];
+    }
 
     while (path.remainingBounces > 0) {
         const float3 origin = make_float3(path.ray.origin.x,path.ray.origin.y,path.ray.origin.z);

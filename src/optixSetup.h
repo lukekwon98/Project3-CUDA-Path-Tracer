@@ -5,6 +5,7 @@
 
 struct PathSegment;
 struct ShadeableIntersection;
+struct Camera;
 
 // intiialize optix and create its device context
 void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId);
@@ -16,10 +17,9 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 
 struct Material;
 
-//NOOOOPE
+//Bulk moving to raygen
 void launchOptixPaths(
-    PathSegment* paths,
-    ShadeableIntersection* intersections,
+    PathSegment* paths, ShadeableIntersection* intersections,
     const Material* materials,
-    int numPaths,
-    int iteration);
+    int numPaths, int iteration,
+    const Camera& camera, int maxBounces, bool generateCameraRays);

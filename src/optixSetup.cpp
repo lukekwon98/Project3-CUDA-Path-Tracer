@@ -30,6 +30,7 @@
 #include "gltfLoader.h"
 
 #include <optix_stack_size.h>
+#include "sceneStructs.h"
 
 #define TEST_LAUNCH 0
 
@@ -806,11 +807,10 @@ initOptixPathtracePipeline();
 
 //Raygen Implementation, same as launchOptixIntersections
 void launchOptixPaths(
-	PathSegment* paths,
-	ShadeableIntersection* intersections,
+	PathSegment* paths, ShadeableIntersection* intersections,
 	const Material* materials,
-	int numPaths,
-	int iteration) {
+	int numPaths, int iteration,
+	const Camera& camera, int maxBounces, bool generateCameraRays) {
 	if (numPaths <= 0) {
 		return;
 	}
@@ -837,6 +837,16 @@ void launchOptixPaths(
 	launchParams.materials = materials;
 	launchParams.numPaths = static_cast<unsigned int>(numPaths);
 	launchParams.iteration = iteration;
+	launchParams.camera.width = camera.resolution.x;
+	launchParams.camera.height = camera.resolution.y;
+
+	launchParams.camera.position = make_float3(camera.position.x, camera.position.y, camera.position.z);
+	launchParams.camera.view = make_float3(camera.view.x, camera.view.y, camera.view.z);
+	launchParams.camera.up = make_float3(camera.up.x, camera.up.y, camera.up.z);
+	launchParams.camera.right = make_float3(camera.right.x, camera.right.y, camera.right.z);
+	launchParams.camera.pixelLength = make_float2(camera.pixelLength.x, camera.pixelLength.y);
+	launchParams.maxBounces = maxBounces;
+	launchParams.generateCameraRays = generateCameraRays ? 1 : 0;
 
 	cudaError_t cudaResult = cudaMemcpy(dev_launchParams, &launchParams, sizeof(LaunchParams), cudaMemcpyHostToDevice);
 	checkCuda(cudaResult, "Upload pathtrace launch parameters");
