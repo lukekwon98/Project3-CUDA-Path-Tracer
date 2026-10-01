@@ -1,3 +1,7 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 // initialization and cleanup function declarations
 #include "optixSetup.h"
 
@@ -24,6 +28,8 @@
 
 #include <vector>
 #include "gltfLoader.h"
+
+#include <optix_stack_size.h>
 
 #define TEST_LAUNCH 0
 
@@ -112,6 +118,12 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 		char header[OPTIX_SBT_RECORD_HEADER_SIZE]; //binary storage, not a text string - OptiX defines it as 32 bytes and requires SBT record alignment of 16 bytes
 	};
 
+	//RaygenLoop Implementation
+	OptixProgramGroup pathtraceRaygenProgramGroup = nullptr;
+	OptixPipeline pathtracePipeline = nullptr;
+	RaygenRecord* dev_pathtraceRaygenRecord = nullptr;
+	OptixShaderBindingTable pathtraceSbt = {};
+
 	// Same header only layout, it will identify our hitgroup
 	using HitgroupRecord = RaygenRecord;
 
@@ -150,6 +162,101 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 		if (result != OPTIX_SUCCESS) {
 			throw std::runtime_error(std::string(operation) + ": " + optixGetErrorString(result));
 		}
+	}
+
+	//PathTracing on optix
+	//Same as initOptixContext
+	void initOptixPathtracePipeline()
+	{
+		OptixProgramGroupDesc desc = {};
+		desc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN; //raygen program
+		desc.raygen.module = optixModule;
+		desc.raygen.entryFunctionName = "__raygen__pathtrace";
+
+		OptixProgramGroupOptions options = {};
+
+		OptixResult optixResult = optixProgramGroupCreate(
+			optixContext,
+			&desc,
+			1,
+			&options,
+			nullptr,
+			nullptr,
+			&pathtraceRaygenProgramGroup);
+		checkOptix(optixResult, "Create pathtrace raygen program group");
+
+		// Reuse the existing hit and miss, only need new raygen
+		OptixProgramGroup groups[] = {
+			pathtraceRaygenProgramGroup,
+			missProgramGroup,
+			hitgroupProgramGroup
+		};
+
+		OptixPipelineLinkOptions linkOptions = {};
+
+		// Sequential trace calls, not recursive trace calls
+		linkOptions.maxTraceDepth = 1;
+
+		optixResult = optixPipelineCreate(
+			optixContext,
+			&pipelineCompileOptions,
+			&linkOptions,
+			groups,
+			3,
+			nullptr,
+			nullptr,
+			&pathtracePipeline);
+		checkOptix(optixResult, "Create pathtrace pipeline");
+
+		// Compute stack requirements for raygen loop program
+		OptixStackSizes stackSizes = {};
+
+		for (OptixProgramGroup group : groups) {
+			optixResult = optixUtilAccumulateStackSizes(
+				group,
+				&stackSizes,
+				pathtracePipeline);
+			checkOptix(optixResult, "Accumulate pathtrace stack sizes");
+		}
+
+		unsigned int directFromTraversal = 0;
+		unsigned int directFromState = 0;
+		unsigned int continuation = 0;
+
+		optixResult = optixUtilComputeStackSizes(
+			&stackSizes,
+			1,  // Maximum nested optixTrace depth
+			0,  // No continuation callables
+			0,  // No direct callables
+			&directFromTraversal,
+			&directFromState,
+			&continuation);
+		checkOptix(optixResult, "Compute pathtrace stack sizes");
+
+		optixResult = optixPipelineSetStackSize(
+			pathtracePipeline,
+			directFromTraversal,
+			directFromState,
+			continuation,
+			1); // Traversable depth: a single GAS.
+		checkOptix(optixResult, "Set pathtrace pipeline stack sizes");
+
+		RaygenRecord record = {};
+
+		optixResult = optixSbtRecordPackHeader(
+			pathtraceRaygenProgramGroup,
+			&record);
+		checkOptix(optixResult, "Pack pathtrace raygen record");
+
+		cudaError_t cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_pathtraceRaygenRecord), sizeof(RaygenRecord));
+		checkCuda(cudaResult, "Allocate pathtrace raygen record");
+
+		cudaResult = cudaMemcpy(dev_pathtraceRaygenRecord, &record, sizeof(RaygenRecord), cudaMemcpyHostToDevice);
+		checkCuda(cudaResult, "Upload pathtrace raygen record");
+
+		// Share the existing hit/miss records, select the new raygen
+		pathtraceSbt = sbt;
+		pathtraceSbt.raygenRecord = reinterpret_cast<CUdeviceptr>(dev_pathtraceRaygenRecord);
 	}
 }
 
@@ -693,6 +800,57 @@ checkCuda(cudaResult, "Launch parameter allocation failed");
 //Compare it with the value printed by raygen
 std::cout << "CPU GAS handle: " << static_cast<unsigned long long>(gasHandle) << std::endl;
 
+//Raygen Implementation
+initOptixPathtracePipeline();
+}
+
+//Raygen Implementation, same as launchOptixIntersections
+void launchOptixPaths(
+	PathSegment* paths,
+	ShadeableIntersection* intersections,
+	const Material* materials,
+	int numPaths,
+	int iteration) {
+	if (numPaths <= 0) {
+		return;
+	}
+
+	if (pathtracePipeline == nullptr || dev_launchParams == nullptr) {
+		throw std::runtime_error("OptiX pathtrace pipeline has not been initialized");
+	}
+
+	if (paths == nullptr || intersections == nullptr || materials == nullptr) {
+		throw std::runtime_error("OptiX pathtrace received a null buffer");
+	}
+
+	LaunchParams launchParams = {};
+
+	launchParams.gasHandle = gasHandle;
+	launchParams.vertices = dev_meshVertices;
+	launchParams.normals = dev_meshNormals;
+	launchParams.triangles = dev_meshIndices;
+	launchParams.triangleMaterialIds = dev_triangleMaterialIds;
+
+	launchParams.paths = paths;
+	launchParams.outputPaths = paths;
+	launchParams.intersections = intersections;
+	launchParams.materials = materials;
+	launchParams.numPaths = static_cast<unsigned int>(numPaths);
+	launchParams.iteration = iteration;
+
+	cudaError_t cudaResult = cudaMemcpy(dev_launchParams, &launchParams, sizeof(LaunchParams), cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Upload pathtrace launch parameters");
+
+	OptixResult optixResult = optixLaunch(
+		pathtracePipeline,
+		nullptr,
+		reinterpret_cast<CUdeviceptr>(dev_launchParams),
+		sizeof(LaunchParams),
+		&pathtraceSbt,
+		launchParams.numPaths,
+		1,
+		1);
+	checkOptix(optixResult, "Launch OptiX pathtrace");
 }
 
 // Preparing bridge between CUDA renderer and OptiX - passes the GPu buffer addresses, GAS handle, and path count to OptiX
@@ -749,6 +907,33 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 }
 
 void destroyOptixContext() {
+	// Raygen Implementation
+	// Complete remnant launches before destroying resources
+	cudaError_t syncResult = cudaDeviceSynchronize();
+	checkCuda(syncResult, "Synchronize before OptiX cleanup");
+
+	if (pathtracePipeline != nullptr) {
+		OptixResult result = optixPipelineDestroy(pathtracePipeline);
+		checkOptix(result, "Destroy pathtrace pipeline");
+		pathtracePipeline = nullptr;
+	}
+
+	if (dev_pathtraceRaygenRecord != nullptr) {
+		cudaError_t result = cudaFree(dev_pathtraceRaygenRecord);
+		checkCuda(result, "Free pathtrace raygen record");
+		dev_pathtraceRaygenRecord = nullptr;
+	}
+
+	pathtraceSbt = {};
+
+	if (pathtraceRaygenProgramGroup != nullptr) {
+		OptixResult result =
+			optixProgramGroupDestroy(pathtraceRaygenProgramGroup);
+
+		checkOptix(result, "Destroy pathtrace raygen program group");
+		pathtraceRaygenProgramGroup = nullptr;
+	}
+
 	// The test launch as already snychronized before cleanup.
 	if (dev_launchParams != nullptr) {
 		cudaError_t result = cudaFree(dev_launchParams);

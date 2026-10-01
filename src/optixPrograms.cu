@@ -6,9 +6,9 @@
 #include "sceneStructs.h" // Members of Pathsegment and ShadeableIntersection
 #include <float.h>
 #include <glm/glm.hpp>
-
-#define TRIANGLE_TEST 0
-#define SETUP_TEST 0
+#include <thrust/random.h>
+#include "intersections.h"
+#include "utilities.h"
 
 // OptiX supplies the variable's contents when it launches
 // extern "C" preserves the exact symbol name - params
@@ -24,6 +24,11 @@ extern "C" __global__ void __raygen__rg() {
 	const unsigned int index = optixGetLaunchIndex().x; //like thread index?
 
 	if (index >= params.numPaths) {
+		return;
+	}
+
+	// ADD
+	if (params.paths[index].remainingBounces <= 0) {
 		return;
 	}
 
@@ -46,39 +51,6 @@ extern "C" __global__ void __raygen__rg() {
 		1, //Hitgroup SBT stride
 		0 //Miss record index
 	);
-
-
-	// Test 1 triangle
-#if TRIANGLE_TEST
-	//Test triangle lies on z = 0, the ray starts at 0,0,1 and travels toward negative Z, intersecting the triangle at 0,0,0
-
-	const float3 origin = make_float3(0.0f, 0.0f, 1.0f);
-	const float3 direction = make_float3(0.0f, 0.0f, -1.0f);
-
-	printf("Tracing test ray\n");
-
-	optixTrace(
-		params.gasHandle, //Acceleration structure to traverse
-		origin, // Ray starting position
-		direction, // Ray direction
-		0.001f, // Minimum accepted ray parameter t
-		100.0f, // Maximum
-		0.0f, // Ray time, no motion blur
-		OptixVisibilityMask(255), // Enable all visibility mask bits
-		OPTIX_RAY_FLAG_NONE, // No additional ray flags
-		0, // Hitgroup SBT offset
-		1, // Hitgroup SBT stride in records
-		0 // Miss record index
-	);
-
-	printf("Test ray finished\n");
-#endif
-
-	// Setup Test
-#if SETUP_TEST
-	//Verify that raygen received the handle built on the host
-	printf("GPU received GAS handle: %llu\n", static_cast<unsigned long long>(params.gasHandle));
-#endif
 }
 
 // Runs when traversal finds the closest accepted intersection
@@ -155,4 +127,130 @@ extern "C" __global__ void __miss__ms() {
 	result.surfaceNormal.z = 0.0f;
 	
 	//printf("Ray missed\n");
+}
+
+
+//Raygen Loop Implementation
+static __forceinline__ __device__
+thrust::default_random_engine raygenMakeRandomEngine(int iteration, int pixelIndex, int remainingBounces) {
+    // Same as the CPU-loop
+    int h = utilhash((1 << 31) | (remainingBounces << 22) | iteration) ^ utilhash(pixelIndex);
+    return thrust::default_random_engine(h);
+}
+
+static __forceinline__ __device__
+glm::vec3 raygenSampleHemisphere( glm::vec3 normal, thrust::default_random_engine& rng) {
+    thrust::uniform_real_distribution<float> u01(0, 1);
+
+    float up = sqrt(u01(rng)); // cos(theta)
+    float over = sqrt(1 - up * up); // sin(theta)
+    float around = u01(rng) * TWO_PI;
+
+    // Find a direction that is not the normal based off of whether or not the
+    // normal's components are all equal to sqrt(1/3) or whether or not at
+    // least one component is less than sqrt(1/3). Learned this trick from
+    // Peter Kutz.
+
+    glm::vec3 directionNotNormal;
+    if (abs(normal.x) < SQRT_OF_ONE_THIRD) {
+        directionNotNormal = glm::vec3(1, 0, 0);
+    }
+    else if (abs(normal.y) < SQRT_OF_ONE_THIRD) {
+        directionNotNormal = glm::vec3(0, 1, 0);
+    }
+    else {
+        directionNotNormal = glm::vec3(0, 0, 1);
+    }
+
+    // Use not-normal direction to generate two perpendicular directions
+    glm::vec3 perpendicularDirection1 =
+        glm::normalize(glm::cross(normal, directionNotNormal));
+
+    glm::vec3 perpendicularDirection2 =
+        glm::normalize(glm::cross(normal, perpendicularDirection1));
+
+    return up * normal
+        + cos(around) * over * perpendicularDirection1
+        + sin(around) * over * perpendicularDirection2;
+}
+
+static __forceinline__ __device__
+void raygenShadeFakeMaterial(
+    PathSegment& path,
+    ShadeableIntersection& intersection)
+{
+    if (intersection.t > 0.0f) {
+
+        thrust::default_random_engine rng = raygenMakeRandomEngine(params.iteration, path.pixelIndex, path.remainingBounces);
+
+        Material material = params.materials[intersection.materialId];
+        glm::vec3 materialColor = material.color;
+
+        if (material.emittance > 0.0f) {
+            path.color *= material.color * material.emittance;
+            path.remainingBounces = 0;
+            return;
+        }
+        else {
+
+            glm::vec3 intersectionPoint = getPointOnRay(path.ray, intersection.t);
+
+            // scatterRay, would separating this optimize further?
+            glm::vec3 nextDirection = raygenSampleHemisphere(intersection.surfaceNormal, rng);
+            path.ray.origin = intersectionPoint;
+            path.ray.direction = nextDirection;
+            path.color *= material.color;
+            path.remainingBounces--;
+
+            // Bounce limit
+            if (path.remainingBounces <= 0) {
+                path.color = glm::vec3(0.0f);
+                path.remainingBounces = 0;
+            }
+        }
+    }
+    else {
+        path.color = glm::vec3(0.0f);
+        path.remainingBounces = 0;
+        return;
+    }
+}
+
+extern "C" __global__ void __raygen__pathtrace()
+{
+    const unsigned int index = optixGetLaunchIndex().x;
+
+    if (index >= params.numPaths) {
+        return;
+    }
+
+    // Read once, all bounce updates operate on this local path.
+    PathSegment path = params.paths[index];
+
+    while (path.remainingBounces > 0) {
+        const float3 origin = make_float3(path.ray.origin.x,path.ray.origin.y,path.ray.origin.z);
+        const float3 direction = make_float3(path.ray.direction.x,path.ray.direction.y,path.ray.direction.z);
+
+        optixTrace(
+            params.gasHandle,
+            origin,
+            direction,
+            0.001f,
+            FLT_MAX,
+            0.0f,
+            OptixVisibilityMask(255),
+            OPTIX_RAY_FLAG_NONE,
+            0,
+            1,
+            0);
+
+        // Existing CH/MS programs write this invocation's slot.
+        // optixTrace returns after the selected program completes.
+        ShadeableIntersection intersection = params.intersections[index];
+
+        raygenShadeFakeMaterial(path, intersection);
+    }
+
+    // Preserve pixelIndex for the existing finalGather kernel.
+    params.outputPaths[index] = path;
 }

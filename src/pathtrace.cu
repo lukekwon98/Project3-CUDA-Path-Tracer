@@ -18,11 +18,19 @@
 #include "intersections.h"
 #include "interactions.h"
 #include "optixSetup.h"
+#include <cub/device/device_partition.cuh>
+#include <cub/device/device_radix_sort.cuh>
+#include <cstdlib>
+#include <climits>
 
 #define ERRORCHECK 0
 #define USE_OPTIX 1
 #define TEST_OPTIX_NORMALS 0
 #define TEST_MATERIALS 0
+#define USE_PARTITION 0 // 0 no partition, 1 thrust, 2 cub, 3 fixed-size launches, no count readback
+#define SORT_MATERIALS 0
+//NOOOOOPE
+#define USE_RAYGEN_LOOP 1
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -97,6 +105,343 @@ static ShadeableIntersection* dev_intersections = NULL;
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
 
+#if SORT_MATERIALS
+
+//in out because we'll be using sort
+static int* dev_materialKeysIn = nullptr;
+static int* dev_materialKeysOut = nullptr;
+
+static int* dev_materialIndicesIn = nullptr;
+static int* dev_materialIndicesOut = nullptr;
+
+static PathSegment* dev_materialSortedPaths = nullptr;
+static ShadeableIntersection* dev_materialSortedHits = nullptr;
+
+static void* dev_materialSortTemp = nullptr;
+static size_t materialSortTempBytes = 0;
+
+static void checkMaterialSortCuda(cudaError_t result,const char* operation)
+{
+    if (result != cudaSuccess) {
+        fprintf(stderr, "%s: %s\n",
+            operation, cudaGetErrorString(result));
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+// Build fresh keys from current bounce's intersections.
+__global__ void buildMaterialSortKeys(
+    int numPaths,
+    const PathSegment* paths,
+    const ShadeableIntersection* intersections,
+    int* keys,
+    int* indices)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= numPaths) {
+        return;
+    }
+
+    indices[index] = index;
+
+    // Finished paths may have stale intersection entries, skip
+    if (paths[index].remainingBounces <= 0) {
+        keys[index] = INT_MAX;
+        return;
+    }
+
+    const ShadeableIntersection& hit = intersections[index];
+
+    // Misses sort first, valid hits sort by material ID
+    keys[index] = hit.t > 0.0f ? hit.materialId : -1;
+}
+
+// Apply the same permutation to both arrays
+__global__ void gatherMaterialSortedPaths(
+    int numPaths,
+    const int* sortedIndices,
+    const PathSegment* paths,
+    const ShadeableIntersection* intersections,
+    PathSegment* sortedPaths,
+    ShadeableIntersection* sortedIntersections)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= numPaths) {
+        return;
+    }
+
+    const int source = sortedIndices[index];
+    const PathSegment path = paths[source];
+
+    sortedPaths[index] = path;
+
+    // Preserve completed paths without reading their stale hit data.
+    ShadeableIntersection hit = {};
+    hit.t = -1.0f;
+    hit.materialId = -1;
+
+    if (path.remainingBounces > 0) {
+        if (intersections[source].t > 0.0f) {
+            hit = intersections[source];
+        }
+    }
+
+    sortedIntersections[index] = hit;
+}
+
+static void initMaterialSort(int maxPaths)
+{
+    const size_t indexBytes = static_cast<size_t>(maxPaths) * sizeof(int);
+
+    cudaError_t result = cudaMalloc(reinterpret_cast<void**>(&dev_materialKeysIn), indexBytes);
+    checkMaterialSortCuda(result, "Allocate material input keys");
+
+    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialKeysOut), indexBytes);
+    checkMaterialSortCuda(result, "Allocate material output keys");
+
+    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialIndicesIn), indexBytes);
+    checkMaterialSortCuda(result, "Allocate material input indices");
+
+    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialIndicesOut), indexBytes);
+    checkMaterialSortCuda(result, "Allocate material output indices");
+
+    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialSortedPaths), static_cast<size_t>(maxPaths) * sizeof(PathSegment));
+    checkMaterialSortCuda(result, "Allocate material sorted paths");
+
+    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialSortedHits), static_cast<size_t>(maxPaths) * sizeof(ShadeableIntersection));
+    checkMaterialSortCuda(result, "Allocate material sorted intersections");
+
+    // Query needed size
+    materialSortTempBytes = 0;
+
+    result = cub::DeviceRadixSort::SortPairs(
+        nullptr,
+        materialSortTempBytes,
+        dev_materialKeysIn,
+        dev_materialKeysOut,
+        dev_materialIndicesIn,
+        dev_materialIndicesOut,
+        maxPaths);
+    checkMaterialSortCuda(result, "Query material sort storage");
+
+    if (materialSortTempBytes == 0) {
+        materialSortTempBytes = 1;
+    }
+
+    result = cudaMalloc(&dev_materialSortTemp, materialSortTempBytes);
+    checkMaterialSortCuda(result, "Allocate material sort storage");
+}
+
+static void sortMaterialsCub(
+    int numPaths,
+    ShadeableIntersection* intersections,
+    PathSegment* paths)
+{
+    if (numPaths <= 1) {
+        return;
+    }
+
+    const int blockSize = 128;
+    const int numBlocks = (numPaths + blockSize - 1) / blockSize;
+
+    buildMaterialSortKeys << <numBlocks, blockSize >> > (
+        numPaths,
+        paths,
+        intersections,
+        dev_materialKeysIn,
+        dev_materialIndicesIn);
+
+    cudaError_t result = cudaGetLastError();
+    checkMaterialSortCuda(result, "Launch material sort key generation");
+
+    size_t availableBytes = materialSortTempBytes;
+
+    result = cub::DeviceRadixSort::SortPairs(
+        dev_materialSortTemp,
+        availableBytes,
+        dev_materialKeysIn,
+        dev_materialKeysOut,
+        dev_materialIndicesIn,
+        dev_materialIndicesOut,
+        numPaths);
+    checkMaterialSortCuda(result, "Sort material keys and indices");
+
+    gatherMaterialSortedPaths << <numBlocks, blockSize >> > (
+        numPaths,
+        dev_materialIndicesOut,
+        paths,
+        intersections,
+        dev_materialSortedPaths,
+        dev_materialSortedHits);
+
+    result = cudaGetLastError();
+    checkMaterialSortCuda(result, "Launch material sort gather");
+
+    // Copy back so the rest of the renderer keeps its existing pointers.
+    result = cudaMemcpyAsync( paths, dev_materialSortedPaths, static_cast<size_t>(numPaths) * sizeof(PathSegment), cudaMemcpyDeviceToDevice,0);
+    checkMaterialSortCuda(result, "Copy material sorted paths");
+
+    result = cudaMemcpyAsync( intersections, dev_materialSortedHits, static_cast<size_t>(numPaths) * sizeof(ShadeableIntersection), cudaMemcpyDeviceToDevice, 0);
+    checkMaterialSortCuda(result, "Copy material sorted intersections");
+}
+
+static void freeMaterialSort()
+{
+    cudaError_t result = cudaFree(dev_materialKeysIn);
+    checkMaterialSortCuda(result, "Free material input keys");
+    dev_materialKeysIn = nullptr;
+
+    result = cudaFree(dev_materialKeysOut);
+    checkMaterialSortCuda(result, "Free material output keys");
+    dev_materialKeysOut = nullptr;
+
+    result = cudaFree(dev_materialIndicesIn);
+    checkMaterialSortCuda(result, "Free material input indices");
+    dev_materialIndicesIn = nullptr;
+
+    result = cudaFree(dev_materialIndicesOut);
+    checkMaterialSortCuda(result, "Free material output indices");
+    dev_materialIndicesOut = nullptr;
+
+    result = cudaFree(dev_materialSortedPaths);
+    checkMaterialSortCuda(result, "Free material sorted paths");
+    dev_materialSortedPaths = nullptr;
+
+    result = cudaFree(dev_materialSortedHits);
+    checkMaterialSortCuda(result, "Free material sorted intersections");
+    dev_materialSortedHits = nullptr;
+
+    result = cudaFree(dev_materialSortTemp);
+    checkMaterialSortCuda(result, "Free material sort storage");
+    dev_materialSortTemp = nullptr;
+    materialSortTempBytes = 0;
+}
+
+#endif
+
+#if USE_PARTITION == 2 || USE_PARTITION == 3
+static PathSegment* dev_partitionOutput = nullptr; //reordered paths
+static void* dev_partitionTemp = nullptr; //scrtach workspace used internally by cub
+static size_t partitionTempBytes = 0;
+static int* dev_partitionCount = nullptr; //holds the number of surviving paths
+
+static void checkCubCuda(cudaError_t result, const char* operation)
+{
+    if (result != cudaSuccess) {
+        fprintf(stderr, "%s: %s\n", operation, cudaGetErrorString(result));
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+static void initCubPartition(int maxPaths) {
+    const size_t pathBytes = static_cast<size_t>(maxPaths) * sizeof(PathSegment);
+    cudaError_t result = cudaMalloc(reinterpret_cast<void**>(&dev_partitionOutput), pathBytes);
+    checkCubCuda(result, "Alloctae CUB partition output");
+
+    result = cudaMalloc(reinterpret_cast<void**>(&dev_partitionCount), sizeof(int));
+    checkCubCuda(result, "Allocate CUB partition count");
+
+    // No partition executed with null temporary storage, used to check how much storage we need
+    partitionTempBytes = 0;
+    result = cub::DevicePartition::If(
+        nullptr, //don't partition, only query size
+        partitionTempBytes, //CUB writes the required bytes
+        dev_paths, 
+        dev_partitionOutput, 
+        dev_partitionCount, 
+        maxPaths, //number of paths we need to support
+        not_terminated());
+    checkCubCuda(result, "Query CUB partition storage");
+
+    // edge case when partitionTempBytes is 0
+    if (partitionTempBytes == 0) {
+        partitionTempBytes = 1;
+    }
+
+    // allocate amount of needed bytes
+    result = cudaMalloc(&dev_partitionTemp, partitionTempBytes);
+    checkCubCuda(result, "Allocate CUB partition storage");
+}
+
+static int partitionPathsCub(int numPaths) {
+    if (numPaths <= 0) {
+        return 0;
+    }
+
+    // Pass a local copy to use as a CUB parameter
+    size_t availableBytes = partitionTempBytes;
+
+    cudaError_t result = cub::DevicePartition::If(
+        dev_partitionTemp,
+        availableBytes,
+        dev_paths,
+        dev_partitionOutput,
+        dev_partitionCount,
+        numPaths,
+        not_terminated()
+    );
+    checkCubCuda(result, "Execute CUB partition");
+
+
+    //Copy the entire input range for the bounce, surviving paths first
+    result = cudaMemcpyAsync(dev_paths, dev_partitionOutput, static_cast<size_t>(numPaths) * sizeof(PathSegment), cudaMemcpyDeviceToDevice, 0);
+    checkCubCuda(result, "Copy CUB partition output");
+
+    // CPU needs this for the next bounce
+    int activeCount = 0;
+    result = cudaMemcpy(&activeCount, dev_partitionCount, sizeof(int), cudaMemcpyDeviceToHost);
+    checkCubCuda(result, "Read CUB active-path count");
+
+    return activeCount;
+}
+
+static void partitionPathsCubFixed(int pixelcount)
+{
+    if (pixelcount <= 0) {
+        return;
+    }
+
+    size_t availableBytes = partitionTempBytes;
+
+    // Partition every path, including previously terminated paths.
+    cudaError_t result = cub::DevicePartition::If(
+        dev_partitionTemp,
+        availableBytes,
+        dev_paths,
+        dev_partitionOutput,
+        dev_partitionCount,
+        pixelcount,
+        not_terminated()
+    );
+    checkCubCuda(result, "Execute fixed-size CUB partition");
+
+    // Preserve every path and its final contribution.
+    result = cudaMemcpyAsync(dev_paths, dev_partitionOutput, static_cast<size_t>(pixelcount) * sizeof(PathSegment), cudaMemcpyDeviceToDevice, 0);
+    checkCubCuda(result, "Copy fixed-size CUB partition output");
+
+    // No GPU-to-CPU survivor-count copy.
+}
+
+static void freeCubPartition()
+{
+    cudaError_t result = cudaFree(dev_partitionOutput);
+    checkCubCuda(result, "Free CUB partition output");
+    dev_partitionOutput = nullptr;
+
+    result = cudaFree(dev_partitionTemp);
+    checkCubCuda(result, "Free CUB partition storage");
+    dev_partitionTemp = nullptr;
+    partitionTempBytes = 0;
+
+    result = cudaFree(dev_partitionCount);
+    checkCubCuda(result, "Free CUB partition count");
+    dev_partitionCount = nullptr;
+}
+
+#endif
+
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
     guiData = imGuiData;
@@ -125,6 +470,14 @@ void pathtraceInit(Scene* scene)
 
     // TODO: initialize any extra device memeory you need
 
+#if USE_PARTITION == 2 || USE_PARTITION == 3
+    initCubPartition(pixelcount);
+#endif
+
+#if SORT_MATERIALS
+    initMaterialSort(pixelcount);
+#endif
+
     checkCUDAError("pathtraceInit");
 }
 
@@ -136,6 +489,14 @@ void pathtraceFree()
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     // TODO: clean up any extra device memory you created
+    
+#if USE_PARTITION == 2 || USE_PARTITION == 3
+    freeCubPartition();
+#endif
+
+#if SORT_MATERIALS
+    freeMaterialSort();
+#endif
 
     checkCUDAError("pathtraceFree");
 }
@@ -194,6 +555,10 @@ __global__ void computeIntersections(
 
     if (path_index < num_paths)
     {
+        if (pathSegments[path_index].remainingBounces <= 0) {
+            return;
+        }
+
         PathSegment pathSegment = pathSegments[path_index];
 
         float t;
@@ -266,14 +631,18 @@ __global__ void shadeFakeMaterial(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < num_paths)
     {
+        //skip before reading an intersection that may be from an earlier bounce
+        if (pathSegments[idx].remainingBounces <= 0) {
+            return;
+        }
+
         ShadeableIntersection intersection = shadeableIntersections[idx];
         if (intersection.t > 0.0f) // if the intersection exists...
         {
           // Set up the RNG
           // LOOK: this is how you use thrust's RNG! Please look at
           // makeSeededRandomEngine as well.
-            thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, pathSegments[idx].remainingBounces);
-            //thrust::uniform_real_distribution<float> u01(0, 1);
+            thrust::default_random_engine rng = makeSeededRandomEngine(iter, pathSegments[idx].pixelIndex, pathSegments[idx].remainingBounces);
 
             Material material = materials[intersection.materialId];
             glm::vec3 materialColor = material.color;
@@ -296,9 +665,6 @@ __global__ void shadeFakeMaterial(
                     pathSegments[idx].color = glm::vec3(0.f);
                     pathSegments[idx].remainingBounces = 0;
                 }
-                //float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f)); //Lambertian
-                //pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f; //Emission Reduction?
-                //pathSegments[idx].color *= u01(rng); // apply some noise because why not
             }
             // If there was no intersection, color the ray black.
             // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
@@ -415,27 +781,42 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     checkCUDAError("generate camera ray");
 
         int depth = 0;
-        PathSegment* dev_path_end = dev_paths + pixelcount;
-        int num_paths = dev_path_end - dev_paths;
-        int original_num_paths = num_paths;
+        int num_paths = pixelcount;
+        int original_num_paths = pixelcount;
+        //PathSegment* dev_path_end = dev_paths + pixelcount;
+        //int num_paths = dev_path_end - dev_paths;
+        //int original_num_paths = num_paths;
 
         // --- PathSegment Tracing Stage ---
         // Shoot ray into scene, bounce between objects, push shading chunks
 
-        //bool iterationComplete = false;
-        while (num_paths > 0)
+        //NOOOOOPE
+#if USE_RAYGEN_LOOP
+        launchOptixPaths(
+            dev_paths,
+            dev_intersections,
+            dev_materials,
+            pixelcount,
+            iter);
+
+        if (guiData != nullptr) {
+            // Exact maximum depth is not read back
+            guiData->TracedDepth = -1;
+        }
+#else
+
+#if USE_PARTITION == 1|| USE_PARTITION == 2
+        while(num_paths > 0)
+#else
+        while (depth < traceDepth)
+#endif
         {
-            // Save the number entering this intersection and shading pass
-            const int pathsBeforeBounce = num_paths;
+            int pathsBeforeBounce = num_paths;
 
-            // clean shading chunks
-            //cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
-
-            // tracing
-            dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
+            dim3 numblocksPathSegmentTracing((num_paths + blockSize1d - 1) / blockSize1d);
 
 #if USE_OPTIX
-            launchOptixIntersections(dev_paths, dev_intersections, num_paths);
+            launchOptixIntersections(dev_paths,dev_intersections,num_paths);
 #else
             computeIntersections << <numblocksPathSegmentTracing, blockSize1d >> > (
                 depth,
@@ -446,18 +827,11 @@ void pathtrace(uchar4* pbo, int frame, int iter)
                 dev_intersections
                 );
 #endif
-            //checkCUDAError("trace one bounce");
-            //cudaDeviceSynchronize();
             depth++;
 
-            // TODO:
-            // --- Shading Stage ---
-            // Shade path segments based on intersections and generate new rays by
-            // evaluating the BSDF.
-            // Start off with just a big kernel that handles all the different
-            // materials you have in the scenefile.
-            // TODO: compare between directly shading the path segments and shading
-            // path segments that have been reshuffled to be contiguous in memory.
+#if SORT_MATERIALS
+            sortMaterialsCub(num_paths,dev_intersections,dev_paths);
+#endif
 
             shadeFakeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
                 iter,
@@ -466,21 +840,32 @@ void pathtrace(uchar4* pbo, int frame, int iter)
                 dev_paths,
                 dev_materials
                 );
-            //checkCUDAError("shade one bounce");
-
+#if USE_PARTITION == 1
+            //Trhust manages temporary storage internally
             auto start_0s = thrust::partition(thrust::device, dev_paths, dev_paths + num_paths, not_terminated());
-            num_paths = start_0s - dev_paths; // TODO: should be based off stream compaction results.
-
-            if (iter == 1) {
-                std::cout << "Pass " << depth<< ": traced " << pathsBeforeBounce<< ", surviving " << num_paths<< std::endl;
+            num_paths = static_cast<int>(start_0s - dev_paths);
+#elif USE_PARTITION == 2
+            //We allocate storage once and resuse it
+            num_paths = partitionPathsCub(num_paths);
+#elif USE_PARTITION == 3
+            if (depth < traceDepth) {
+                partitionPathsCubFixed(pixelcount);
             }
-
-            if (guiData != nullptr)
-            {
+#endif
+            if (iter == 1) {
+#if USE_PARTITION == 1 || USE_PARTITION == 2
+                std::cout << "Pass " << depth << ": traced " << pathsBeforeBounce << ", surviving " << num_paths << std::endl;
+#else
+                //std::cout << "Pass " << depth << ": launched " << num_paths << " slots; terminated paths skipped" << std::endl;
+#endif
+            }
+            if (guiData != nullptr) {
                 guiData->TracedDepth = depth;
             }
         }
 
+//NOOOOPE
+#endif
         // Assemble this iteration and apply it to the image
         dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
         finalGather << <numBlocksPixels, blockSize1d >> > (original_num_paths, dev_image, dev_paths);
