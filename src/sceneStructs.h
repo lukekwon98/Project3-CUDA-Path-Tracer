@@ -86,4 +86,6 @@ struct ShadeableIntersection
   float t;
   glm::vec3 surfaceNormal;
   int materialId;
+
+  glm::vec3 geometricNormal; //triangle's normal before flipping or smoothing
 };

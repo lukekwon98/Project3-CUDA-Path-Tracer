@@ -39,7 +39,7 @@
         "EYE":[0.0,0.0,3.0],
         "LOOKAT":[0.0,0.0,0.0],
         "UP":[0.0,1.0,0.0],
-        "APERTURE_RADIUS": 0.05,
+        "APERTURE_RADIUS": 0.00,
         "FOCAL_DISTANCE": 10.0
     },
     "Objects":

@@ -385,9 +385,15 @@ int main(int argc, char** argv)
     for (MeshData& mesh : loadedMeshes) {
         mesh.rendererMaterialId = int(scene->materials.size());
 
+        //Fix so we read it from gltf?
         Material material = {};
         material.color = glm::vec3(mesh.baseColorFactor);
         material.emittance = 0.0f;
+        if (mesh.rendererMaterialId == 0) {
+            material.hasRefractive = 1.0f;
+            material.indexOfRefraction = 1.5f;
+            material.color = glm::vec3(1.0f);
+        }
 
         scene->materials.push_back(material);
     }

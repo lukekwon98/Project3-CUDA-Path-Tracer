@@ -72,7 +72,8 @@ extern "C" __global__ void __closesthit__ch() {
 	const glm::vec3 p2(c.x, c.y, c.z);
 
 	//Geometric normal perpendicular to the triangle
-	glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+	glm::vec3 geometricNormal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+    glm::vec3 normal = geometricNormal;
 
 	const float3 na = params.normals[triangle.x];
 	const float3 nb = params.normals[triangle.y];
@@ -103,6 +104,8 @@ extern "C" __global__ void __closesthit__ch() {
 	const float3 direction = optixGetWorldRayDirection();
 	const glm::vec3 rayDirection(direction.x, direction.y, direction.z);
 
+    result.geometricNormal = geometricNormal;
+
 	if (glm::dot(normal, rayDirection) > 0.0f) {
 		normal = -normal;
 	}
@@ -119,6 +122,7 @@ extern "C" __global__ void __miss__ms() {
 	ShadeableIntersection& result = params.intersections[index];
 
 	result.t = -1.0f;
+    result.geometricNormal = glm::vec3(0.0f);
 
 	// No material or surface exists
 	result.materialId = -1;
@@ -174,6 +178,32 @@ glm::vec3 raygenSampleHemisphere( glm::vec3 normal, thrust::default_random_engin
         + sin(around) * over * perpendicularDirection2;
 }
 
+static __forceinline__ __device__
+float fresnelDielectric(float cosThetaI, float etaI, float etaT) {
+    //positive incident cosine and the correct incident/transmitted indices of refraction
+    //cosThetaI = angle between incoming light and surface normal
+    cosThetaI = glm::clamp(cosThetaI, 0.0f, 1.0f);
+
+    if (etaI == etaT) {
+        return 0.0f;
+    }
+
+    float eta = etaI / etaT;
+    float sin2ThetaI = glm::max(0.0f, 1.0f - cosThetaI * cosThetaI);
+    float sin2ThetaT = eta * eta * sin2ThetaI;
+
+    if (sin2ThetaT >= 1.0f) {
+        return 1.0f;
+    }
+
+    float cosThetaT = sqrtf(1.0f - sin2ThetaT);
+
+    float rParallel = (eta * cosThetaI - etaI * cosThetaT) / (etaT * cosThetaI + etaI * cosThetaT);
+    float rPerpendicular = (etaI * cosThetaI - etaI * cosThetaT) / (etaI * cosThetaI + etaT * cosThetaT);
+
+    return 0.5f * (rParallel * rParallel + rPerpendicular * rPerpendicular);
+}
+
 //__forceinline__ tells the compiler to inline the function into the caller rather than use an ordinary function call
 static __forceinline__ __device__
 void raygenShadeFakeMaterial(
@@ -191,6 +221,49 @@ void raygenShadeFakeMaterial(
             path.color *= material.color * material.emittance;
             path.remainingBounces = 0;
             return;
+        }
+        else if (material.hasRefractive > 0.0f) {
+            glm::vec3 incident = glm::normalize(path.ray.direction);
+            bool frontFace = glm::dot(incident, intersection.geometricNormal) < 0.0f;
+
+            glm::vec3 normal = frontFace ? intersection.geometricNormal : -intersection.geometricNormal;
+
+            float etaI = frontFace ? 1.0f : material.indexOfRefraction;
+            float etaT = frontFace ? material.indexOfRefraction : 1.0f;
+            float eta = etaI / etaT;
+
+            float cosThetaI = glm::clamp(glm::dot(-incident, normal), 0.0f, 1.0f);
+            float F = fresnelDielectric(cosThetaI, etaI, etaT); //probability
+
+            thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+
+            glm::vec3 nextDirection;
+
+            if (F >= 1.0f || u01(rng) < F) { //F becomes the possibility to reflect/refract
+                nextDirection = glm::reflect(incident, normal);
+            }
+            else {
+                nextDirection = glm::refract(incident, normal, eta);
+
+                path.color *= eta * eta; //pbrt's radiacne transport correction
+            }
+
+            nextDirection = glm::normalize(nextDirection);
+
+            //exact surface position
+            glm::vec3 hitPoint = path.ray.origin + intersection.t * path.ray.direction;
+            //move onto the side the outgoing ray is traveling toward
+            float offsetSign = glm::dot(nextDirection, intersection.geometricNormal) > 0.0f ? 1.0f : -1.0f; //reflection stays in th incident medium, refraction crosses the surface
+
+            path.ray.origin = hitPoint + offsetSign * 0.001f * intersection.geometricNormal;
+            path.ray.direction = nextDirection;
+            path.remainingBounces--;
+
+            if (path.remainingBounces <= 0) {
+                path.color = glm::vec3(0.0f);
+                path.remainingBounces = 0;
+            }
+
         }
         else {
 
