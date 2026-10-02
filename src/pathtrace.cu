@@ -778,7 +778,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     // TODO: perform one iteration of path tracing
 
-#if !USE_RAYGEN_CAMERA
+#if !USE_RAYGEN_CAMERA || !USE_RAYGEN_LOOP
     generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths);
     checkCUDAError("generate camera ray");
 #endif

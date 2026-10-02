@@ -837,14 +837,17 @@ void launchOptixPaths(
 	launchParams.materials = materials;
 	launchParams.numPaths = static_cast<unsigned int>(numPaths);
 	launchParams.iteration = iteration;
+
 	launchParams.camera.width = camera.resolution.x;
 	launchParams.camera.height = camera.resolution.y;
-
 	launchParams.camera.position = make_float3(camera.position.x, camera.position.y, camera.position.z);
 	launchParams.camera.view = make_float3(camera.view.x, camera.view.y, camera.view.z);
 	launchParams.camera.up = make_float3(camera.up.x, camera.up.y, camera.up.z);
 	launchParams.camera.right = make_float3(camera.right.x, camera.right.y, camera.right.z);
 	launchParams.camera.pixelLength = make_float2(camera.pixelLength.x, camera.pixelLength.y);
+	launchParams.camera.apertureRadius = camera.apertureRadius;
+	launchParams.camera.focalDistance = camera.focalDistance;
+	
 	launchParams.maxBounces = maxBounces;
 	launchParams.generateCameraRays = generateCameraRays ? 1 : 0;
 

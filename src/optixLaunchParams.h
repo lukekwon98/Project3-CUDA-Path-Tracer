@@ -20,6 +20,8 @@ struct RaygenCamera {
 	float3 up;
 	float3 right;
 	float2 pixelLength;
+	float apertureRadius;
+	float focalDistance; //different than focal Length
 };
 
 // Shared layout used by CPU code and OptiX GPU programs

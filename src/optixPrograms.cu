@@ -242,9 +242,34 @@ PathSegment generateRaygenCameraPath(unsigned int index)
     PathSegment path{};
 
     path.ray.origin = position;
-    path.ray.direction = glm::normalize(view
+    path.ray.direction = glm::normalize(view //normal pinhole camera ray jittered within pixel
         - right * cam.pixelLength.x * ((float)(x + xJitter) - (float)(cam.width) * 0.5f)
         - up * cam.pixelLength.y * ((float)(y + yJitter) - (float)(cam.height) * 0.5f));
+
+    //thin-lens DOF
+    if (cam.apertureRadius > 0.0f && cam.focalDistance > 0.0f) {
+        //glm::vec3 forward = glm::normalize(view);
+
+        //focal lane is a flat plane perpendicular to the camera's forward dir, at distance focalLength
+        //ray direction is usually not parallel to foward, so the distance along the ray to the plane is longer than focal length
+        //so project direction onto forward, and divide by cos angle to get distance along the ray
+        float tFocus = cam.focalDistance / glm::dot(path.ray.direction, view); //find focus point
+
+        //we know all rays should converge at this point in the focus plane, the pinhole ray just becomes an anchor
+        glm::vec3 focusPoint = path.ray.origin + tFocus * path.ray.direction;
+
+        float radius = cam.apertureRadius * sqrtf(u01(rng)); //sample uniform var then multiply by radius to get random point on aperture
+        float angle = 6.28318530718f * u01(rng); //radians for polar
+        float lensX = radius * cosf(angle);
+        float lensY = radius * sinf(angle);
+
+        //consider skipping this
+        //glm::vec3 lensRight = glm::normalize(right);
+        //glm::vec3 lensUp = glm::normalize(glm::cross(lensRight, forward));
+
+        path.ray.origin = position + lensX * right + lensY * up; //update origin to a point on the physical lens
+        path.ray.direction = glm::normalize(focusPoint - path.ray.origin); //update the direction
+    }
 
     path.color = glm::vec3(1.0f);
     path.pixelIndex = pixelIndex;
