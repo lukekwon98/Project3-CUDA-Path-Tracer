@@ -265,14 +265,41 @@ void raygenShadeFakeMaterial(
             }
 
         }
-        else {
+        else if (material.hasReflective > 0.0f) {
+            glm::vec3 incident = glm::normalize(path.ray.direction); //world space ray
 
+            //If shading normal reflects ray into the object, use geometric normal instead
+            //Geometric normal, flip if incident is on the opposite side
+            glm::vec3 geometricNormal = glm::dot(incident, intersection.geometricNormal) < 0.0f ? intersection.geometricNormal : -intersection.geometricNormal;
+            //Interpolated shading normal
+            glm::vec3 nextDirection = glm::reflect(incident, intersection.surfaceNormal);
+            //flip back to geometric normal if smoothing sends the reflection beneath triangle
+            if (glm::dot(nextDirection, geometricNormal) <= 0.0f) { //if nextDirection and geometricNormal face the opposite way, lkight is refracting inside the material
+                nextDirection = glm::reflect(incident, geometricNormal); //so reflect to geometric normal instead
+            }
+
+            //update ray origin and direction
+            glm::vec3 hitPoint = path.ray.origin + intersection.t * path.ray.direction;
+            path.ray.origin = hitPoint + 0.001f * geometricNormal;
+            path.ray.direction = glm::normalize(nextDirection);
+
+            //Record reflectance rgb update path throughput directly
+            path.color *= material.color;
+            path.remainingBounces--;
+
+            if (path.remainingBounces <= 0) {
+                path.color = glm::vec3(0.0f);
+                path.remainingBounces = 0;
+            }
+        }
+        else {
             glm::vec3 intersectionPoint = getPointOnRay(path.ray, intersection.t);
 
             // scatterRay, would separating this optimize further?
             glm::vec3 nextDirection = raygenSampleHemisphere(intersection.surfaceNormal, rng);
             path.ray.origin = intersectionPoint;
             path.ray.direction = nextDirection;
+
             path.color *= material.color;
             path.remainingBounces--;
 

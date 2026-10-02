@@ -391,8 +391,9 @@ int main(int argc, char** argv)
         material.emittance = 0.0f;
         if (mesh.rendererMaterialId == 0) {
             material.hasRefractive = 1.0f;
+            material.hasReflective = 0.0f;
             material.indexOfRefraction = 1.5f;
-            material.color = glm::vec3(1.0f);
+            material.color = glm::vec3(0.95f);
         }
 
         scene->materials.push_back(material);
