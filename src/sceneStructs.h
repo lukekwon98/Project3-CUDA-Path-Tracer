@@ -45,6 +45,9 @@ struct Material
     float hasRefractive;
     float indexOfRefraction;
     float emittance;
+    float roughness;
+    float metallic;
+    int useMetallicRoughness;
 };
 
 struct Camera
@@ -87,5 +90,5 @@ struct ShadeableIntersection
   glm::vec3 surfaceNormal;
   int materialId;
 
-  glm::vec3 geometricNormal; //triangle's normal before flipping or smoothing
+  glm::vec3 geometricNormal; //triangle's normal before smoothing, surfaceNormal gets interpolated in closesthit
 };

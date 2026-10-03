@@ -426,6 +426,11 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				}
 
 				meshData.baseColorFactor = glm::vec4(static_cast<float>(color[0]), static_cast<float>(color[1]), static_cast<float>(color[2]), static_cast<float>(color[3]));
+				
+				const auto& pbr = material.pbrMetallicRoughness;
+				meshData.metallicFactor = glm::clamp(static_cast<float>(pbr.metallicFactor), 0.0f, 1.0f);
+				meshData.roughnessFactor = glm::clamp(static_cast<float>(pbr.roughnessFactor), 0.0f, 1.0f);
+			
 			}
 
 			std::cout << "Base color: "

@@ -389,12 +389,12 @@ int main(int argc, char** argv)
         Material material = {};
         material.color = glm::vec3(mesh.baseColorFactor);
         material.emittance = 0.0f;
-        if (mesh.rendererMaterialId == 0) {
-            material.hasRefractive = 1.0f;
-            material.hasReflective = 0.0f;
-            material.indexOfRefraction = 1.5f;
-            material.color = glm::vec3(0.95f);
-        }
+        material.hasRefractive = 0.0f;
+        material.hasReflective = 0.0f;
+        material.roughness = mesh.roughnessFactor * mesh.roughnessFactor;
+        //when useMetallicRoughness = 1, we still get reflective (depending on roughness)
+        material.useMetallicRoughness = 1;
+        material.metallic = mesh.metallicFactor;
 
         scene->materials.push_back(material);
     }

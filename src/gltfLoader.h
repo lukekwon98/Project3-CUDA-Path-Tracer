@@ -15,6 +15,8 @@ struct MeshData {
 	int gltfMaterialIndex = -1;
 	//Index into renderer's material array
 	int rendererMaterialId = -1;
+	float metallicFactor = 1.0f;
+	float roughnessFactor = 1.0f;
 	glm::vec4 baseColorFactor = glm::vec4(1.0f);
 };
 
