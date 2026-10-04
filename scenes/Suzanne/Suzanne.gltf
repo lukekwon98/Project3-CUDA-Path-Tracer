@@ -180,18 +180,41 @@
       "uri": "data:application/octet-stream;base64,AABAwQAA4MAAAADAAABAQQAA4MAAAADAAABAQQAAAEEAAADAAABAwQAAAEEAAADAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIAAAACAAMA"
     }
   ],
+  "images": [
+    {
+      "uri": "../../img/texture_test.jpg"
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9729,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "textures": [
+    {
+      "source": 0,
+      "sampler": 0
+    }
+  ],
   "materials": [
     {
       "name": "SuzanneDiffuse",
       "pbrMetallicRoughness": {
         "baseColorFactor": [
-          0.12,
-          0.38,
-          0.92,
+          1.0,
+          1.0,
+          1.0,
           1.0
         ],
-        "metallicFactor": 1.0,
-        "roughnessFactor": 0.2
+        "baseColorTexture": {
+          "index": 0,
+          "texCoord": 0
+        },
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
       }
     },
     {
@@ -199,9 +222,9 @@
       "doubleSided": true,
       "pbrMetallicRoughness": {
         "baseColorFactor": [
-          1.0,
-          1.0,
-          0.0,
+          0.53,
+          0.81,
+          0.98,
           1.0
         ],
         "metallicFactor": 0.0,

@@ -1,9 +1,9 @@
 // Compile TinyGLTF's implementation in this file only
 #define TINYGLTF_IMPLEMENTATION
 
-// Geometry only loading, no textures
-#define TINYGLTF_NO_STB_IMAGE
+// Load images, but don't need TinyGLTF to write images
 #define TINYGLTF_NO_STB_IMAGE_WRITE
+
 
 #include "tiny_gltf.h"
 #include "gltfLoader.h"
@@ -67,7 +67,13 @@ void traverseMesh(const tinygltf::Model& model, int nodeIndex, const glm::mat4& 
 	}
 }
 
-bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
+//Current texture import limits:
+//Every image must be 8 bit RGBA.
+//Every texture uses sRGB decoding.
+//Every texture uses linear filtering, regardless of the glTF filter settings.
+
+//Only TEXCOORD_0 is supported.
+bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::vector<ImageData>& outputImages, std::vector<TextureData>& outputTextures) {
 	std::vector<MeshData> loadedMeshes;
 
 	tinygltf::TinyGLTF loader; //performs parcing
@@ -97,6 +103,25 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 		<< "Buffers: " << model.buffers.size() << '\n';
 
 	//////////////////
+	// Texture load
+	//////////////////
+	std::cout << "Images: " << model.images.size() << std::endl; //decoded pixel bytes
+	std::cout << "Textures: " << model.textures.size() << std::endl;
+
+	for (size_t i = 0; i < model.images.size(); i++) {
+		const tinygltf::Image& image = model.images[i];
+
+		std::cout << "Image " << i
+			<< ": " << image.width << " x " << image.height
+			<< ", channels: " << image.component
+			<< ", bits per channel: " << image.bits
+			<< ", decoded bytes: " << image.image.size()
+			<< std::endl;
+	}
+
+
+
+	//////////////////
 	// Scene check
 	//////////////////
 	if (model.scenes.empty()) {
@@ -106,7 +131,7 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 
 	// Use the declared default scene, or choose scene 0 if none is declared
 	const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
-	const tinygltf::Scene& gltfScene = model.scenes.at(sceneIndex);
+	const tinygltf::Scene& gltfScene = model.scenes.at(sceneIndex); //Scene
 	std::vector<MeshInstance> instances;
 
 	for (int rootNode : gltfScene.nodes) {
@@ -119,7 +144,7 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 	// Model Loop
 	//////////////////
 	for (const MeshInstance& instance: instances) {
-		const tinygltf::Mesh& mesh = model.meshes.at(instance.meshIndex);
+		const tinygltf::Mesh& mesh = model.meshes.at(instance.meshIndex); //Mesh
 
 		std::cout << "Mesh " << instance.meshIndex << ": " << mesh.primitives.size() << " primitive(s)\n";
 
@@ -127,7 +152,7 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 		// Mesh Loop
 		//////////////////
 		for (size_t p = 0; p < mesh.primitives.size(); p++) {
-			const tinygltf::Primitive& primitive = mesh.primitives[p];
+			const tinygltf::Primitive& primitive = mesh.primitives[p]; //Primitive
 
 			auto positionIt = primitive.attributes.find("POSITION");
 			if (positionIt == primitive.attributes.end()) {
@@ -136,7 +161,7 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 			}
 
 			//Accessors describe how to interpret data (element count, type, and location in a buffer), it follows the gltf format
-			const tinygltf::Accessor& positions = model.accessors.at(positionIt->second);
+			const tinygltf::Accessor& positions = model.accessors.at(positionIt->second); //Accessor
 
 			// Supports ordinary FLOAT VEC3 positions
 			if (positions.type != TINYGLTF_TYPE_VEC3 ||
@@ -288,6 +313,58 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 			}
 
 			//////////////////
+			// Get texture coordinates
+			//////////////////
+			std::vector<glm::vec2> meshTexcoords;
+
+			auto texcoordIt = primitive.attributes.find("TEXCOORD_0");
+
+			if (texcoordIt != primitive.attributes.end()) {
+				const tinygltf::Accessor& texcoords = model.accessors.at(texcoordIt->second);
+
+				//Non sparse, float VEC2 coords
+				if (texcoords.type != TINYGLTF_TYPE_VEC2 ||
+					texcoords.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
+					texcoords.normalized || texcoords.sparse.isSparse || texcoords.bufferView < 0 ||
+					texcoords.count != positions.count) {
+					std::cerr << "Unsupported texture coordinate accessor\n";
+					return false;
+				}
+
+				const tinygltf::BufferView& texcoordView = model.bufferViews.at(texcoords.bufferView);
+				const tinygltf::Buffer& texcoordBuffer = model.buffers.at(texcoordView.buffer);
+				
+				const size_t texcoordElementBytes = 2 * sizeof(float);
+				const size_t texcoordStride = texcoordView.byteStride != 0 ? texcoordView.byteStride : texcoordElementBytes;
+
+				if (texcoordView.byteOffset > texcoordBuffer.data.size() ||
+					texcoordView.byteLength > texcoordBuffer.data.size() - texcoordView.byteOffset ||
+					texcoords.byteOffset > texcoordView.byteLength || texcoordStride < texcoordElementBytes) {
+					std::cerr << "Invalid texture coordinate buffer layout\n";
+					return false;
+				}
+
+				const size_t availableTexcoordBytes = texcoordView.byteLength - texcoords.byteOffset;
+
+				if(texcoords.count > 0 && (availableTexcoordBytes < texcoordElementBytes || texcoords.count - 1 > (availableTexcoordBytes - texcoordElementBytes) / texcoordStride)) {
+					std::cerr << "Texture coordinates exceed buffer view\n";
+					return false;
+				}
+
+				const size_t texcoordStart = texcoordView.byteOffset + texcoords.byteOffset;
+
+				meshTexcoords.reserve(texcoords.count);
+
+				for (size_t v = 0; v < texcoords.count; ++v) {
+					float uv[2];
+
+					std::memcpy(uv, texcoordBuffer.data.data() + texcoordStart + v * texcoordStride, sizeof(uv));
+
+					meshTexcoords.push_back(glm::vec2(uv[0], uv[1]));
+				}
+			}
+
+			//////////////////
 			// Get Indices
 			//////////////////
 			std::vector<std::array<std::uint32_t, 3>> meshTriangles;
@@ -405,6 +482,8 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 			MeshData meshData;
 			meshData.positions = std::move(meshPositions);
 			meshData.normals = std::move(meshNormals);
+			meshData.texcoords = std::move(meshTexcoords);
+			std::cout << "    Texture coordinates: " << meshData.texcoords.size() << '\n';
 			meshData.triangles = std::move(meshTriangles);
 			meshData.gltfMaterialIndex = primitive.material;
 
@@ -416,6 +495,28 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 
 				//get material property
 				const tinygltf::Material& material = model.materials.at(primitive.material);
+
+				const auto& baseColorTexture = material.pbrMetallicRoughness.baseColorTexture;
+				
+				if (baseColorTexture.index >= 0) {
+					if (size_t(baseColorTexture.index) >= model.textures.size()) {
+						std::cerr << "Invalid base color texture index\n";
+						return false;
+					}
+
+					//test, only check TEXCOORD_0
+					if (baseColorTexture.texCoord != 0) {
+						std::cerr << "Base color texture requires an unsupported UV set\n";
+						return false;
+					}
+
+					if (meshData.texcoords.empty()) {
+						std::cerr << "Base color texture requires TEXCOORD_0\n";
+						return false;
+					}
+
+					meshData.gltfBaseColorTextureIndex = baseColorTexture.index;
+				}
 
 				//get base color from materials
 				const auto& color = material.pbrMetallicRoughness.baseColorFactor;
@@ -439,10 +540,115 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output) {
 				<< meshData.baseColorFactor.b << ", "
 				<< meshData.baseColorFactor.a << '\n';
 
+			std::cout << "Base color texture index: " << meshData.gltfBaseColorTextureIndex << std::endl;
+
 			loadedMeshes.push_back(std::move(meshData));
 		}
 	}
 
+	std::vector<ImageData> loadedImages;
+	loadedImages.reserve(model.images.size());
+
+	for (tinygltf::Image& image : model.images) {
+		if (image.width <= 0 || image.height <= 0 || image.image.empty()) {
+			std::cerr << "Image has no decoded pixel data\n";
+			return false;
+		}
+
+		ImageData imageData;
+		imageData.width = image.width;
+		imageData.height = image.height;
+		imageData.channels = image.component;
+		imageData.bitsPerChannel = image.bits;
+		imageData.pixels = std::move(image.image);
+
+		loadedImages.push_back(std::move(imageData));
+	}
+
+	std::vector<TextureData> loadedTextures;
+	loadedTextures.reserve(model.textures.size());
+
+	for (tinygltf::Texture& texture : model.textures) {
+		if (texture.source < 0 || size_t(texture.source) >= loadedImages.size()) {
+			std::cerr << "Texture has no supported image source \n";
+			return false;
+		}
+
+		TextureData textureData;
+		textureData.imageIndex = texture.source;
+
+		if (texture.sampler >= 0) {
+			if (size_t(texture.sampler) >= model.samplers.size()) {
+				std::cerr << "Invalid texture sampler index\n";
+				return false;
+			}
+
+			tinygltf::Sampler& sampler = model.samplers[texture.sampler];
+
+			textureData.wrapS = sampler.wrapS;
+			textureData.wrapT = sampler.wrapT;
+			textureData.minFilter = sampler.minFilter;
+			textureData.magFilter = sampler.magFilter;
+		}
+
+		loadedTextures.push_back(textureData);
+	}
+
 	output = std::move(loadedMeshes); //lets the destination vectors take ownership of the existing allocations instead of copying every vertex and triangle
+	outputImages = std::move(loadedImages);
+	outputTextures = std::move(loadedTextures);
+	return true;
+}
+
+//Parsing using stb_image, exposed by tiny_gltf.h
+bool loadEnvironment(const std::string& filename, EnvironmentData& output) {
+	if (!stbi_is_hdr(filename.c_str())) {
+		std::cerr << "Expected a readable Radiance HDR image: " << filename << std::endl;
+		return false;
+	}
+
+	int width = 0;
+	int height = 0;
+	int sourceChannels = 0;
+
+	//returns floating point pixels
+	float* pixels = stbi_loadf( 
+		filename.c_str(),
+		&width,
+		&height,
+		&sourceChannels,
+		4); //requests RGBA output even if the file contains RGB
+
+	if (pixels == nullptr) {
+		const char* reason = stbi_failure_reason();
+
+		std::cerr << "Failed to load environment: " << filename << '\n'
+			<< (reason ? reason : "Unknown iamge-loading error")
+			<< '\n';
+
+		return false;
+	}
+
+	if (width <= 0 || height <= 0) {
+		stbi_image_free(pixels);
+		std::cerr << "Invalid environment dimensions\n";
+		return false;
+	}
+
+	EnvironmentData environment;
+	environment.width = width;
+	environment.height = height;
+
+	size_t valueCount = (size_t)width * (size_t)height * 4;
+
+	environment.pixels.assign(pixels, pixels + valueCount);
+	stbi_image_free(pixels); //releases allocation after we copy the pixels into our vector
+
+	output = std::move(environment);
+
+	std::cout << "Loaded environment: " << filename << '\n'
+		<< "Size: " << output.width << " x "
+		<< output.height << ", RGBA float\n";
+
 	return true;
 }

@@ -88,6 +88,19 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	// GPU buffer holding the launch parameters supplied to OptixLaunch()
 	LaunchParams* dev_launchParams = nullptr;
 
+	//CPU vector holding handles to GPU image allocations
+	std::vector<cudaArray_t> dev_imageArrays;
+
+	//one CUDA texture object pre TeextureData entry, conains texture handles
+	std::vector<cudaTextureObject_t> textureObjects;
+
+	//CPU vector of handles
+	cudaTextureObject_t* dev_textureObjects = nullptr;
+
+	//dev_enviornmentARray stores pixels fo texture, while environmentTexture provides a way to sample those textures
+	cudaArray_t dev_environmentArray = nullptr;
+	cudaTextureObject_t environmentTexture = 0;
+
 	// Read the generated PTX file into CPU memory
 	std::string loadPtxFile(const char* path) {
 		std::ifstream file(path, std::ios::binary);
@@ -149,6 +162,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	//GPU allocation containing the three vertices of a test triangle
 	float3* dev_meshVertices = nullptr;
 	float3* dev_meshNormals = nullptr;
+	float2* dev_meshTexcoords = nullptr;
 	uint3* dev_meshIndices = nullptr;
 	int* dev_triangleMaterialIds = nullptr;
 
@@ -259,9 +273,25 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 		pathtraceSbt = sbt;
 		pathtraceSbt.raygenRecord = reinterpret_cast<CUdeviceptr>(dev_pathtraceRaygenRecord);
 	}
+
+	cudaTextureAddressMode getTextureAddressMode(int wrapMode) {
+		switch(wrapMode) {
+		case 10497: //REPEAT
+			return cudaAddressModeWrap;
+
+		case 33071: //CLAMP_TO_EDGE
+			return cudaAddressModeClamp;
+
+		case 33648: //MIRRORED_REPEAT
+			return cudaAddressModeMirror;
+
+		default:
+			throw std::runtime_error("Unsupported texture wrap mode");
+		}
+	}
 }
 
-void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) {
+void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<ImageData>& images, const std::vector<TextureData>& textures, const EnvironmentData& environment, int lightMaterialId) {
 	// Ensure Cuda is initialized for the current device, passing nullptr frees no allocation
 	// Stop initialization if CUDA reports an error
 	cudaError_t cudaResult = cudaFree(nullptr);
@@ -568,14 +598,132 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 	sbt.hitgroupRecordCount = 1;
 
 	//////////////////////////////////
+	// HDR Load
+	//////////////////////////////////
+	if (environment.width <= 0 || environment.height <= 0) {
+		throw std::runtime_error("Invalid environment dimensions");
+	}
+
+	const size_t envWidth = static_cast<size_t>(environment.width);
+	const size_t envHeight = static_cast<size_t>(environment.height);
+	const size_t envRowBytes = envWidth * 4 * sizeof(float);
+
+	if (environment.pixels.size() != envWidth * envHeight * 4) {
+		throw std::runtime_error("Invalid environment pixel count");
+	}
+
+	const cudaChannelFormatDesc envChannelDesc = cudaCreateChannelDesc<float4>();
+
+	cudaResult = cudaMallocArray(&dev_environmentArray, &envChannelDesc, envWidth, envHeight);
+	checkCuda(cudaResult, "Environment array allocation failed");
+
+	cudaResult = cudaMemcpy2DToArray(dev_environmentArray, 0, 0, environment.pixels.data(), envRowBytes, envRowBytes, envHeight, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Environment upload failed");
+
+	cudaResourceDesc envResourceDesc = {};
+	envResourceDesc.resType = cudaResourceTypeArray;
+	envResourceDesc.res.array.array = dev_environmentArray;
+
+	cudaTextureDesc envTextureDesc = {};
+	envTextureDesc.addressMode[0] = cudaAddressModeWrap; //horizontal coordinate wraps around the panorama
+	envTextureDesc.addressMode[1] = cudaAddressModeClamp; //vertical coordinate clamps at the poles
+	envTextureDesc.normalizedCoords = 1;
+	envTextureDesc.filterMode = cudaFilterModeLinear;
+	envTextureDesc.readMode = cudaReadModeElementType;
+	envTextureDesc.sRGB = 0; // float 4 preserves HDR, sRGB = 0 avoids decoding early linear radiance
+
+	cudaResult = cudaCreateTextureObject(&environmentTexture, &envResourceDesc, &envTextureDesc, nullptr);
+	checkCuda(cudaResult, "Environment texture creation failed");
+
+	std::cout << "Uploaded HDR environment and created texture object\n";
+
+	//////////////////////////////////
+	// Image Load
+	//////////////////////////////////
+	dev_imageArrays.resize(images.size(), nullptr);
+
+	const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<uchar4>();
+	for (size_t i = 0; i < images.size(); i++) {
+		const ImageData& image = images[i];
+
+		if (image.width <= 0 || image.height <= 0) {
+			throw std::runtime_error("Invalid image dimensions");
+		}
+		if (image.bitsPerChannel != 8 || image.channels != 4) {
+			throw std::runtime_error("Texture upload currently requires 8-bit RGBA images");
+		}
+
+		const size_t width = static_cast<size_t>(image.width);
+		const size_t height = static_cast<size_t>(image.height);
+		const size_t rowBytes = width * sizeof(uchar4);
+
+		if (image.pixels.size() / rowBytes != height || image.pixels.size() % rowBytes != 0) {
+			throw std::runtime_error("Image pixel data size is invalid");
+		}
+
+		cudaResult = cudaMallocArray(&dev_imageArrays[i], &channelDesc, width, height);
+		checkCuda(cudaResult, "Image array allocation failed");
+
+		cudaResult = cudaMemcpy2DToArray(dev_imageArrays[i], 0, 0, image.pixels.data(), rowBytes, rowBytes, height, cudaMemcpyHostToDevice);
+		checkCuda(cudaResult, "Image upload failed");
+	}
+
+	std::cout << "Uploaded " << dev_imageArrays.size() << "image(s)\n";
+
+	//////////////////////////////////
+	// Texture Objects
+	//////////////////////////////////
+	textureObjects.resize(textures.size(), 0);
+
+	for (size_t i = 0; i < textures.size(); i++) {
+		const TextureData& texture = textures[i];
+
+		if (texture.imageIndex < 0 ||
+			static_cast<size_t>(texture.imageIndex) >= dev_imageArrays.size()) {
+			throw std::runtime_error("Invalid texture image index");
+		}
+
+		cudaResourceDesc resourceDesc = {};
+		resourceDesc.resType = cudaResourceTypeArray;
+		resourceDesc.res.array.array = dev_imageArrays[texture.imageIndex];
+
+		cudaTextureDesc textureDesc = {};
+		textureDesc.addressMode[0] = getTextureAddressMode(texture.wrapS);
+		textureDesc.addressMode[1] = getTextureAddressMode(texture.wrapT);
+
+		textureDesc.normalizedCoords = 1; //use uv, which spans 0 1
+		textureDesc.filterMode = cudaFilterModeLinear; //blend neighboring pixels
+		textureDesc.readMode = cudaReadModeNormalizedFloat; // convert unsigned byte values into floating point values from 0 to 1
+
+		//Base-color sampling
+		textureDesc.sRGB = 1; //decode color into linear space for lighting
+
+		cudaResult = cudaCreateTextureObject(&textureObjects[i], &resourceDesc, &textureDesc, nullptr);
+		checkCuda(cudaResult, "Texture object creation failed");
+	}
+	std::cout << "Created " << textureObjects.size() << " texture object(s)\n";
+
+	if (!textureObjects.empty()) {
+		const size_t textureBytes = textureObjects.size() * sizeof(cudaTextureObject_t);
+
+		cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_textureObjects), textureBytes);
+		checkCuda(cudaResult, "Texture handle allocation failed");
+
+		cudaResult = cudaMemcpy(dev_textureObjects, textureObjects.data(), textureBytes, cudaMemcpyHostToDevice);
+		checkCuda(cudaResult, "Texture handle upload failed");
+	}
+
+	//////////////////////////////////
 	// Triangle Load
 	//////////////////////////////////
 	if (meshes.empty()) {
 		throw std::runtime_error("No mesh parts loaded");
 	}
 
+	//combine data from all separate meshes into 1 array
 	std::vector<float3> vertices;
 	std::vector<float3> vertexNormals;
+	std::vector<float2> vertexTexcoords;
 	std::vector<uint3> triangles;
 	std::vector<int> triangleMaterialIds;
 
@@ -611,6 +759,20 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 			}
 		}
 
+		if (!mesh.texcoords.empty() && mesh.texcoords.size() != mesh.positions.size()) {
+			throw std::runtime_error("Texture coordinate count does not match vertex count");
+		}
+
+		for (size_t v = 0; v < mesh.positions.size(); v++) {
+			if (mesh.texcoords.empty()) {
+				vertexTexcoords.push_back(make_float2(0.0f, 0.0f)); //missing UVs
+			}
+			else {
+				const glm::vec2& uv = mesh.texcoords[v];
+				vertexTexcoords.push_back(make_float2(uv.x, uv.y));
+			}
+		}
+
 		for (const auto& t : mesh.triangles) {
 			triangles.push_back(make_uint3(vertexOffset + t[0], vertexOffset + t[1], vertexOffset + t[2]));
 			triangleMaterialIds.push_back(mesh.rendererMaterialId);
@@ -627,6 +789,7 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 	// fallback for the 0s will be implemeneted in closest-hit
 	for (int v = 0; v < 4; ++v) {
 		vertexNormals.push_back(make_float3(0.f, 0.f, 0.f));
+		vertexTexcoords.push_back(make_float2(0.0f, 0.0f));
 	}
 
 	//Two triangles forming light
@@ -637,8 +800,10 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 	triangleMaterialIds.push_back(lightMaterialId);
 	triangleMaterialIds.push_back(lightMaterialId);
 
+	//GPU malloc
 	const size_t vertexBytes = vertices.size() * sizeof(float3);
 	const size_t normalBytes = vertexNormals.size() * sizeof(float3);
+	const size_t texcoordBytes = vertexTexcoords.size() * sizeof(float2);
 	const size_t indexBytes = triangles.size() * sizeof(uint3);
 	const size_t materialBytes = triangleMaterialIds.size() * sizeof(int);
 
@@ -653,6 +818,12 @@ void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId) 
 
 	cudaResult = cudaMemcpy(dev_meshNormals, vertexNormals.data(), normalBytes, cudaMemcpyHostToDevice);
 	checkCuda(cudaResult, "Mesh normals upload failed");
+
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshTexcoords), texcoordBytes);
+	checkCuda(cudaResult, "Meshtexture coordinte allocation failed");
+
+	cudaResult = cudaMemcpy(dev_meshTexcoords, vertexTexcoords.data(), texcoordBytes, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Mesh texture coordinate upload failed");
 
 	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshIndices), indexBytes);
 	checkCuda(cudaResult, "Mesh index allocation failed");
@@ -828,6 +999,8 @@ void launchOptixPaths(
 	launchParams.gasHandle = gasHandle;
 	launchParams.vertices = dev_meshVertices;
 	launchParams.normals = dev_meshNormals;
+	launchParams.texcoords = dev_meshTexcoords;
+	launchParams.textures = dev_textureObjects;
 	launchParams.triangles = dev_meshIndices;
 	launchParams.triangleMaterialIds = dev_triangleMaterialIds;
 
@@ -881,12 +1054,15 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 		throw std::runtime_error("OptiX received a null ray or intersection buffer");
 	}
 
+	//Only traces existing rays and writes intersections, so it doesn't need materials, camera settings, or output paths unlike luanchOptixPaths
 	//Prepare the launch's addresses and active-path count on the CPU
 	//Here are my GPu rays, here is where their intersection results should go, and here is how many rays to process
 	LaunchParams launchParams = {};
 	launchParams.gasHandle = gasHandle;
 	launchParams.vertices = dev_meshVertices;
 	launchParams.normals = dev_meshNormals;
+	launchParams.texcoords = dev_meshTexcoords; //UV buffer
+	launchParams.textures = dev_textureObjects;
 	launchParams.triangles = dev_meshIndices;
 	launchParams.triangleMaterialIds = dev_triangleMaterialIds;
 
@@ -924,6 +1100,41 @@ void destroyOptixContext() {
 	// Complete remnant launches before destroying resources
 	cudaError_t syncResult = cudaDeviceSynchronize();
 	checkCuda(syncResult, "Synchronize before OptiX cleanup");
+
+	if (environmentTexture != 0) {
+		cudaError_t result = cudaDestroyTextureObject(environmentTexture);
+		checkCuda(result, "Environment texture cleanup failed");
+		environmentTexture = 0;
+	}
+
+	if (dev_environmentArray != nullptr) {
+		cudaError_t result = cudaFreeArray(dev_environmentArray);
+		checkCuda(result, "Environment aray cleanup failed");
+		dev_environmentArray = nullptr;
+	}
+
+	if (dev_textureObjects != nullptr) {
+		cudaError_t result = cudaFree(dev_textureObjects);
+		checkCuda(result, "Texture handle cleanup failed");
+		dev_textureObjects = nullptr;
+	}
+
+	for (cudaTextureObject_t& textureObject : textureObjects) {
+		if (textureObject != 0) {
+			cudaError_t result = cudaDestroyTextureObject(textureObject);
+			checkCuda(result, "Texture object cleanup failed");
+			textureObject = 0;
+		}
+	}
+
+	for (cudaArray_t& imageArray : dev_imageArrays) {
+		if (imageArray != nullptr) {
+			cudaError_t result = cudaFreeArray(imageArray);
+			checkCuda(result, "Image array cleanup failed");
+			imageArray = nullptr;
+		}
+	}
+	dev_imageArrays.clear();
 
 	if (pathtracePipeline != nullptr) {
 		OptixResult result = optixPipelineDestroy(pathtracePipeline);
@@ -980,6 +1191,18 @@ void destroyOptixContext() {
 			throw std::runtime_error(std::string("Triangle vertex cleanup failed: ") + cudaGetErrorString(result));
 		}
 		dev_meshVertices = nullptr;
+	}
+
+	if (dev_meshNormals != nullptr) {
+		cudaError_t result = cudaFree(dev_meshNormals);
+		checkCuda(result, "Mesh normal cleanup failed");
+		dev_meshNormals = nullptr;
+	}
+
+	if (dev_meshTexcoords != nullptr) {
+		cudaError_t result = cudaFree(dev_meshTexcoords);
+		checkCuda(result, "Mesh texture cordinate cleanup failed");
+		dev_meshTexcoords = nullptr;
 	}
 
 	// Release mesh triaingle GPU indices allocation

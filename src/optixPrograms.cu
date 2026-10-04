@@ -63,6 +63,22 @@ extern "C" __global__ void __closesthit__ch() {
 	const unsigned int primitiveIndex = optixGetPrimitiveIndex(); //got index of triangle that was hit
 	const uint3 triangle = params.triangles[primitiveIndex];  //the triangle the ray hit, has 3 vertex indices, not 3 positions
 
+    const float2 bary = optixGetTriangleBarycentrics();
+    
+    const float w0 = 1.0f - bary.x - bary.y;
+    const float w1 = bary.x;
+    const float w2 = bary.y;
+
+    result.texcoord = glm::vec2(0.0f);
+
+    if (params.texcoords != nullptr) {
+        const float2 uv0 = params.texcoords[triangle.x];
+        const float2 uv1 = params.texcoords[triangle.y];
+        const float2 uv2 = params.texcoords[triangle.z];
+
+        result.texcoord = w0 * glm::vec2(uv0.x, uv0.y) + w1 * glm::vec2(uv1.x, uv1.y) + w2 * glm::vec2(uv2.x, uv2.y);
+    }
+
 	const float3 a = params.vertices[triangle.x]; //triangle holds indices to each vertex, x y z are each indices of a vertex 
 	const float3 b = params.vertices[triangle.y];
 	const float3 c = params.vertices[triangle.z];
@@ -85,12 +101,6 @@ extern "C" __global__ void __closesthit__ch() {
 
 	//Use vertex noramls only when all three are present
 	if (glm::dot(n0, n0) > 0.0f && glm::dot(n1, n1) > 0.0f && glm::dot(n2, n2) > 0.0f) {
-		const float2 bary = optixGetTriangleBarycentrics();
-
-		const float w0 = 1.0f - bary.x - bary.y;
-		const float w1 = bary.x;
-		const float w2 = bary.y;
-
 		const glm::vec3 interpolatedNormal = w0 * n0 + w1 * n1 + w2 * n2;
 
 		if (glm::dot(interpolatedNormal, interpolatedNormal) > 0.0f) {
@@ -129,6 +139,8 @@ extern "C" __global__ void __miss__ms() {
 	result.surfaceNormal.x = 0.0f;
 	result.surfaceNormal.y = 0.0f;
 	result.surfaceNormal.z = 0.0f;
+
+    result.texcoord = glm::vec2(0.0f);
 	
 	//printf("Ray missed\n");
 }
@@ -450,13 +462,23 @@ void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersect
         thrust::default_random_engine rng = raygenMakeRandomEngine(params.iteration, path.pixelIndex, path.remainingBounces);
 
         Material material = params.materials[intersection.materialId];
+        //Apply the base color texture to non emissive materials
+        if (material.emittance <= 0.0f && material.baseColorTextureId >= 0) {
+            cudaTextureObject_t texture = params.textures[material.baseColorTextureId];
+            float4 texel = tex2D<float4>(texture, intersection.texcoord.x, intersection.texcoord.y);
+
+            material.color *= glm::vec3(texel.x, texel.y, texel.z);
+        }
         glm::vec3 materialColor = material.color;
 
+
+        //light source
         if (material.emittance > 0.0f) {
             path.color *= material.color * material.emittance;
             path.remainingBounces = 0;
             return;
         }
+        //glass (refraction + fresnel)
         else if (material.hasRefractive > 0.0f) {
             glm::vec3 incident = glm::normalize(path.ray.direction);
             bool frontFace = glm::dot(incident, intersection.geometricNormal) < 0.0f;
@@ -547,6 +569,7 @@ void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersect
                 path.remainingBounces = 0;
             }
         }
+        //reflective + roughness
         else if (material.hasReflective > 0.0f) {
             glm::vec3 incident = glm::normalize(path.ray.direction); //world space ray
             glm::vec3 wo = -incident;

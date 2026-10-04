@@ -204,7 +204,8 @@ void errorCallback(int error, const char* description)
     fprintf(stderr, "%s\n", description);
 }
 
-bool init(const std::vector<MeshData>& loadedMeshes, int lightMaterialId)
+bool init(const std::vector<MeshData>& loadedMeshes, const std::vector<ImageData>& loadedImages, 
+    const std::vector<TextureData>& loadedTextures, const EnvironmentData& envirionment, int lightMaterialId)
 {
     glfwSetErrorCallback(errorCallback);
 
@@ -244,7 +245,7 @@ bool init(const std::vector<MeshData>& loadedMeshes, int lightMaterialId)
     initVAO();
     initTextures();
     initCuda();
-    initOptixContext(loadedMeshes, lightMaterialId); // Create the OptiX context after selecting the CUDA device, cuda device is selected with cudaGLSetDevice(0) in initCuda
+    initOptixContext(loadedMeshes, loadedImages, loadedTextures, environment, lightMaterialId); // Create the OptiX context after selecting the CUDA device, cuda device is selected with cudaGLSetDevice(0) in initCuda
     initPBO();
     GLuint passthroughProgram = initShader();
 
@@ -349,14 +350,21 @@ int main(int argc, char** argv)
     startTimeString = currentTimeString();
 
     std::vector<MeshData> loadedMeshes;
+    std::vector<ImageData> loadedImages;
+    std::vector<TextureData> loadedTextures;
 
-    // loadGltf into loadedMeshes
-    bool loaded = loadGltf("../scenes/Suzanne/Suzanne.gltf", loadedMeshes);
+    // loadGltf into loadedMeshes and loadedImages
+    bool loaded = loadGltf("../scenes/Suzanne/Suzanne.gltf", loadedMeshes, loadedImages, loadedTextures);
     if (loaded == false) {
         return EXIT_FAILURE;
     }
 
     std::cout << "Returned " << loadedMeshes.size() << " mesh part(s)\n";
+
+    EnvironmentData environment;
+    if (!loadEnvironment("../img/greenwich_park_4k.hdr", environment)) {
+        return EXIT_FAILURE;
+    }
 
     if (argc < 2)
     {
@@ -388,6 +396,7 @@ int main(int argc, char** argv)
         //Fix so we read it from gltf?
         Material material = {};
         material.color = glm::vec3(mesh.baseColorFactor);
+        material.baseColorTextureId = mesh.gltfBaseColorTextureIndex;
         material.emittance = 0.0f;
         material.hasRefractive = 0.0f;
         material.hasReflective = 0.0f;
@@ -403,7 +412,7 @@ int main(int argc, char** argv)
 
     Material lightMaterial = {};
     lightMaterial.color = glm::vec3(1.0f);
-    lightMaterial.emittance = 5.0f;
+    lightMaterial.emittance = 10.0f;
     scene->materials.push_back(lightMaterial);
 
     //Create Instance for ImGUIData
@@ -433,7 +442,7 @@ int main(int argc, char** argv)
     zoom = glm::length(cam.position - ogLookAt);
 
     // Initialize CUDA and GL components
-    init(loadedMeshes, lightMaterialId);
+    init(loadedMeshes, loadedImages, loadedTextures, environment, lightMaterialId);
 
     // Initialize ImGui Data
     InitImguiData(guiData);
@@ -506,8 +515,7 @@ void runCuda()
 
     if (iteration == 0)
     {
-        pathtraceFree();
-        pathtraceInit(scene);
+        pathtraceReset(scene);
     }
 
     if (iteration < renderState->iterations)

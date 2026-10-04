@@ -6,13 +6,46 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 
+struct EnvironmentData {
+	int width = 0;
+	int height = 0;
+
+	//RGBA
+	std::vector<float> pixels;
+};
+
+//image = pixel data
+//texture = tells us which iamge to see and how to sample it
+//both share 1 image
+struct ImageData {
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	int bitsPerChannel = 0;
+
+	std::vector<unsigned char> pixels;
+};
+
+struct TextureData {
+	int imageIndex = -1;
+
+	//Repeat along u and v
+	int wrapS = 10497; //controls what happens outside the image's UV range
+	int wrapT = 10497;
+
+	int minFilter = -1; //controls how pixels are combined when sampling
+	int magFilter = -1;
+};
+
 struct MeshData {
 	std::vector<glm::vec3> positions; //World space
 	std::vector<glm::vec3> normals;
 	std::vector<std::array<std::uint32_t, 3>> triangles;
+	std::vector<glm::vec2> texcoords;
 
 	//Index into the glTF material array, not the renderer's array
 	int gltfMaterialIndex = -1;
+	int gltfBaseColorTextureIndex = -1;
 	//Index into renderer's material array
 	int rendererMaterialId = -1;
 	float metallicFactor = 1.0f;
@@ -20,7 +53,9 @@ struct MeshData {
 	glm::vec4 baseColorFactor = glm::vec4(1.0f);
 };
 
-bool loadGltf(const std::string& filename, std::vector<MeshData>& output);
+bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::vector<ImageData>& outputImages, std::vector<TextureData>& outputTextures);
+bool loadEnvironment(const std::string& filename, EnvironmentData& output);
+
 
 //Box.gltf for reference
 //{

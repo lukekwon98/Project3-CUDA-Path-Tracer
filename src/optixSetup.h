@@ -8,7 +8,7 @@ struct ShadeableIntersection;
 struct Camera;
 
 // intiialize optix and create its device context
-void initOptixContext(const std::vector<MeshData>& meshes, int lightMaterialId);
+void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<ImageData>& images, const std::vector<TextureData>& textures, int lightMaterialId);
 
 // destroy optix
 void destroyOptixContext();

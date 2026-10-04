@@ -28,7 +28,6 @@
 #define TEST_OPTIX_NORMALS 0
 #define TEST_MATERIALS 0
 #define USE_PARTITION 0 // 0 no partition, 1 thrust, 2 cub, 3 fixed-size launches, no count readback
-#define SORT_MATERIALS 0
 //Bulk moving things into raygen
 #define USE_RAYGEN_LOOP 1
 #define USE_RAYGEN_CAMERA 1
@@ -105,222 +104,6 @@ static PathSegment* dev_paths = NULL;
 static ShadeableIntersection* dev_intersections = NULL;
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
-
-#if SORT_MATERIALS
-
-//in out because we'll be using sort
-static int* dev_materialKeysIn = nullptr;
-static int* dev_materialKeysOut = nullptr;
-
-static int* dev_materialIndicesIn = nullptr;
-static int* dev_materialIndicesOut = nullptr;
-
-static PathSegment* dev_materialSortedPaths = nullptr;
-static ShadeableIntersection* dev_materialSortedHits = nullptr;
-
-static void* dev_materialSortTemp = nullptr;
-static size_t materialSortTempBytes = 0;
-
-static void checkMaterialSortCuda(cudaError_t result,const char* operation)
-{
-    if (result != cudaSuccess) {
-        fprintf(stderr, "%s: %s\n",
-            operation, cudaGetErrorString(result));
-        std::exit(EXIT_FAILURE);
-    }
-}
-
-// Build fresh keys from current bounce's intersections.
-__global__ void buildMaterialSortKeys(
-    int numPaths,
-    const PathSegment* paths,
-    const ShadeableIntersection* intersections,
-    int* keys,
-    int* indices)
-{
-    const int index = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (index >= numPaths) {
-        return;
-    }
-
-    indices[index] = index;
-
-    // Finished paths may have stale intersection entries, skip
-    if (paths[index].remainingBounces <= 0) {
-        keys[index] = INT_MAX;
-        return;
-    }
-
-    const ShadeableIntersection& hit = intersections[index];
-
-    // Misses sort first, valid hits sort by material ID
-    keys[index] = hit.t > 0.0f ? hit.materialId : -1;
-}
-
-// Apply the same permutation to both arrays
-__global__ void gatherMaterialSortedPaths(
-    int numPaths,
-    const int* sortedIndices,
-    const PathSegment* paths,
-    const ShadeableIntersection* intersections,
-    PathSegment* sortedPaths,
-    ShadeableIntersection* sortedIntersections)
-{
-    const int index = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (index >= numPaths) {
-        return;
-    }
-
-    const int source = sortedIndices[index];
-    const PathSegment path = paths[source];
-
-    sortedPaths[index] = path;
-
-    // Preserve completed paths without reading their stale hit data.
-    ShadeableIntersection hit = {};
-    hit.t = -1.0f;
-    hit.materialId = -1;
-
-    if (path.remainingBounces > 0) {
-        if (intersections[source].t > 0.0f) {
-            hit = intersections[source];
-        }
-    }
-
-    sortedIntersections[index] = hit;
-}
-
-static void initMaterialSort(int maxPaths)
-{
-    const size_t indexBytes = static_cast<size_t>(maxPaths) * sizeof(int);
-
-    cudaError_t result = cudaMalloc(reinterpret_cast<void**>(&dev_materialKeysIn), indexBytes);
-    checkMaterialSortCuda(result, "Allocate material input keys");
-
-    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialKeysOut), indexBytes);
-    checkMaterialSortCuda(result, "Allocate material output keys");
-
-    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialIndicesIn), indexBytes);
-    checkMaterialSortCuda(result, "Allocate material input indices");
-
-    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialIndicesOut), indexBytes);
-    checkMaterialSortCuda(result, "Allocate material output indices");
-
-    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialSortedPaths), static_cast<size_t>(maxPaths) * sizeof(PathSegment));
-    checkMaterialSortCuda(result, "Allocate material sorted paths");
-
-    result = cudaMalloc(reinterpret_cast<void**>(&dev_materialSortedHits), static_cast<size_t>(maxPaths) * sizeof(ShadeableIntersection));
-    checkMaterialSortCuda(result, "Allocate material sorted intersections");
-
-    // Query needed size
-    materialSortTempBytes = 0;
-
-    result = cub::DeviceRadixSort::SortPairs(
-        nullptr,
-        materialSortTempBytes,
-        dev_materialKeysIn,
-        dev_materialKeysOut,
-        dev_materialIndicesIn,
-        dev_materialIndicesOut,
-        maxPaths);
-    checkMaterialSortCuda(result, "Query material sort storage");
-
-    if (materialSortTempBytes == 0) {
-        materialSortTempBytes = 1;
-    }
-
-    result = cudaMalloc(&dev_materialSortTemp, materialSortTempBytes);
-    checkMaterialSortCuda(result, "Allocate material sort storage");
-}
-
-static void sortMaterialsCub(
-    int numPaths,
-    ShadeableIntersection* intersections,
-    PathSegment* paths)
-{
-    if (numPaths <= 1) {
-        return;
-    }
-
-    const int blockSize = 128;
-    const int numBlocks = (numPaths + blockSize - 1) / blockSize;
-
-    buildMaterialSortKeys << <numBlocks, blockSize >> > (
-        numPaths,
-        paths,
-        intersections,
-        dev_materialKeysIn,
-        dev_materialIndicesIn);
-
-    cudaError_t result = cudaGetLastError();
-    checkMaterialSortCuda(result, "Launch material sort key generation");
-
-    size_t availableBytes = materialSortTempBytes;
-
-    result = cub::DeviceRadixSort::SortPairs(
-        dev_materialSortTemp,
-        availableBytes,
-        dev_materialKeysIn,
-        dev_materialKeysOut,
-        dev_materialIndicesIn,
-        dev_materialIndicesOut,
-        numPaths);
-    checkMaterialSortCuda(result, "Sort material keys and indices");
-
-    gatherMaterialSortedPaths << <numBlocks, blockSize >> > (
-        numPaths,
-        dev_materialIndicesOut,
-        paths,
-        intersections,
-        dev_materialSortedPaths,
-        dev_materialSortedHits);
-
-    result = cudaGetLastError();
-    checkMaterialSortCuda(result, "Launch material sort gather");
-
-    // Copy back so the rest of the renderer keeps its existing pointers.
-    result = cudaMemcpyAsync( paths, dev_materialSortedPaths, static_cast<size_t>(numPaths) * sizeof(PathSegment), cudaMemcpyDeviceToDevice,0);
-    checkMaterialSortCuda(result, "Copy material sorted paths");
-
-    result = cudaMemcpyAsync( intersections, dev_materialSortedHits, static_cast<size_t>(numPaths) * sizeof(ShadeableIntersection), cudaMemcpyDeviceToDevice, 0);
-    checkMaterialSortCuda(result, "Copy material sorted intersections");
-}
-
-static void freeMaterialSort()
-{
-    cudaError_t result = cudaFree(dev_materialKeysIn);
-    checkMaterialSortCuda(result, "Free material input keys");
-    dev_materialKeysIn = nullptr;
-
-    result = cudaFree(dev_materialKeysOut);
-    checkMaterialSortCuda(result, "Free material output keys");
-    dev_materialKeysOut = nullptr;
-
-    result = cudaFree(dev_materialIndicesIn);
-    checkMaterialSortCuda(result, "Free material input indices");
-    dev_materialIndicesIn = nullptr;
-
-    result = cudaFree(dev_materialIndicesOut);
-    checkMaterialSortCuda(result, "Free material output indices");
-    dev_materialIndicesOut = nullptr;
-
-    result = cudaFree(dev_materialSortedPaths);
-    checkMaterialSortCuda(result, "Free material sorted paths");
-    dev_materialSortedPaths = nullptr;
-
-    result = cudaFree(dev_materialSortedHits);
-    checkMaterialSortCuda(result, "Free material sorted intersections");
-    dev_materialSortedHits = nullptr;
-
-    result = cudaFree(dev_materialSortTemp);
-    checkMaterialSortCuda(result, "Free material sort storage");
-    dev_materialSortTemp = nullptr;
-    materialSortTempBytes = 0;
-}
-
-#endif
 
 #if USE_PARTITION == 2 || USE_PARTITION == 3
 static PathSegment* dev_partitionOutput = nullptr; //reordered paths
@@ -475,11 +258,24 @@ void pathtraceInit(Scene* scene)
     initCubPartition(pixelcount);
 #endif
 
-#if SORT_MATERIALS
-    initMaterialSort(pixelcount);
-#endif
-
     checkCUDAError("pathtraceInit");
+}
+
+void pathtraceReset(Scene* scene) {
+    if (dev_image == nullptr) {
+        pathtraceInit(scene);
+        return;
+    }
+
+    Camera& cam = scene->state.camera;
+    size_t pixelcount = static_cast<size_t>(cam.resolution.x) * static_cast<size_t>(cam.resolution.y);
+    cudaError_t result = cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
+
+    if (result != cudaSuccess) {
+        fprintf(stderr, "Reset accumulation: %s\n", cudaGetErrorString(result));
+        std::exit(EXIT_FAILURE);
+    }
+
 }
 
 void pathtraceFree()
@@ -490,13 +286,14 @@ void pathtraceFree()
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     // TODO: clean up any extra device memory you created
+    dev_image = nullptr;
+    dev_paths = nullptr;
+    dev_geoms = nullptr;
+    dev_materials = nullptr;
+    dev_intersections = nullptr;
     
 #if USE_PARTITION == 2 || USE_PARTITION == 3
     freeCubPartition();
-#endif
-
-#if SORT_MATERIALS
-    freeMaterialSort();
 #endif
 
     checkCUDAError("pathtraceFree");
@@ -833,10 +630,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
                 );
 #endif
             depth++;
-
-#if SORT_MATERIALS
-            sortMaterialsCub(num_paths,dev_intersections,dev_paths);
-#endif
 
             shadeFakeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
                 iter,

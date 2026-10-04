@@ -38,12 +38,14 @@ struct LaunchParams {
 
 	const float3* vertices;
 	const float3* normals;
+	const float2* texcoords;
 	const uint3* triangles;
 	const int* triangleMaterialIds;
 
 	// Testing raygen loop implementation (everything runs on optix kernel)
 	PathSegment* outputPaths; // Write each completed path back for finalGather()
 	const Material* materials; //read material colors and emission during shading
+	const cudaTextureObject_t* textures;
 	int iteration; //seed the random generator for the current sample
 
 	//Also including camera
