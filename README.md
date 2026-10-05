@@ -19,6 +19,7 @@ CUDA Path Tracer
   - Optix kernel only for intersection + Nsight Systems
   - Optix kernel for intersection + shading + Nsight Systems
   - Optix kernel for raygen + intersection + Nsight Systems
+  - __inline__ comparison
 - Visual Features
   - Refraction, Fresnel, Reflection
   - Physically based materials (Microfacets, Metallic)
