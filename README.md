@@ -21,6 +21,7 @@ CUDA Path Tracer
   - Optix kernel for raygen + intersection + Nsight Systems
   - __forceinline__ comparison (uber kernel & branching) - if I have time
 - Visual Features
+  - Jitter anti-aliasing
   - Refraction, Fresnel, Reflection
   - Physically based materials (Microfacets, Metallic)
   - glTF loading
