@@ -30,6 +30,7 @@ CUDA Path Tracer
   - Normal Map
   - DOF
   - Reinhard + Gamma
+ - Mention cmakeslists changes as mentioned in instructions
 
 
 
