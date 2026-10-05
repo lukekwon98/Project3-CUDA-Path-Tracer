@@ -22,6 +22,7 @@ CUDA Path Tracer
 - Visual Features
   - Refraction, Fresnel, Reflection
   - Physically based materials (Microfacets, Metallic)
+  - glTF loading
   - Texture Mapping
   - Environment mapping + MIS (Environment pdf)
   - Metallic Roughness Map
