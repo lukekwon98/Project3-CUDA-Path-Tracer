@@ -49,6 +49,9 @@ struct Material
     float metallic;
     int useMetallicRoughness;
     int baseColorTextureId = -1; //-1 - use material's constant color
+    int metallicRoughnessTextureId = -1;
+    int normalTextureId = -1;
+    float normalScale = 1.0f;
 };
 
 struct Camera
@@ -89,6 +92,8 @@ struct ShadeableIntersection
 {
   float t;
   glm::vec3 surfaceNormal;
+  glm::vec3 surfaceTangent;
+  glm::vec3 surfaceBitangent;
   glm::vec3 geometricNormal; //triangle's normal before smoothing, surfaceNormal gets interpolated in closesthit
   glm::vec2 texcoord;
   int materialId;

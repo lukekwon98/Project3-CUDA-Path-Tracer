@@ -94,7 +94,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	//one CUDA texture object pre TeextureData entry, conains texture handles
 	std::vector<cudaTextureObject_t> textureObjects;
 
-	//CPU vector of handles
+	//CPU vector of texture handles
 	cudaTextureObject_t* dev_textureObjects = nullptr;
 
 	//dev_enviornmentARray stores pixels fo texture, while environmentTexture provides a way to sample those textures
@@ -166,6 +166,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	//GPU allocation containing the three vertices of a test triangle
 	float3* dev_meshVertices = nullptr;
 	float3* dev_meshNormals = nullptr;
+	float4* dev_meshTangents = nullptr;
 	float2* dev_meshTexcoords = nullptr;
 	uint3* dev_meshIndices = nullptr;
 	int* dev_triangleMaterialIds = nullptr;
@@ -293,6 +294,7 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 			throw std::runtime_error("Unsupported texture wrap mode");
 		}
 	}
+
 }
 
 void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<ImageData>& images, const std::vector<TextureData>& textures, const EnvironmentData& environment, int lightMaterialId) {
@@ -699,16 +701,19 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 	//////////////////////////////////
 	// Texture Objects
 	//////////////////////////////////
-	textureObjects.resize(textures.size(), 0);
+	//Two handles per gltf texture
+	//[2*i] = color sampling, with sRGB decoding
+	//[2*i+1] = data sampling, without sRGB decoding
+	textureObjects.resize(2 * textures.size(), 0);
 
 	for (size_t i = 0; i < textures.size(); i++) {
 		const TextureData& texture = textures[i];
 
-		if (texture.imageIndex < 0 ||
-			static_cast<size_t>(texture.imageIndex) >= dev_imageArrays.size()) {
+		if (texture.imageIndex < 0 || size_t(texture.imageIndex) >= dev_imageArrays.size()) {
 			throw std::runtime_error("Invalid texture image index");
 		}
 
+		//Both handles reference the same image allocation
 		cudaResourceDesc resourceDesc = {};
 		resourceDesc.resType = cudaResourceTypeArray;
 		resourceDesc.res.array.array = dev_imageArrays[texture.imageIndex];
@@ -717,15 +722,21 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 		textureDesc.addressMode[0] = getTextureAddressMode(texture.wrapS);
 		textureDesc.addressMode[1] = getTextureAddressMode(texture.wrapT);
 
-		textureDesc.normalizedCoords = 1; //use uv, which spans 0 1
-		textureDesc.filterMode = cudaFilterModeLinear; //blend neighboring pixels
-		textureDesc.readMode = cudaReadModeNormalizedFloat; // convert unsigned byte values into floating point values from 0 to 1
+		textureDesc.normalizedCoords = 1;
+		textureDesc.filterMode = cudaFilterModeLinear;
+		textureDesc.readMode = cudaReadModeNormalizedFloat;
 
-		//Base-color sampling
-		textureDesc.sRGB = 1; //decode color into linear space for lighting
+		//Base color - convert RGB values to linear
+		textureDesc.sRGB = 1;
 
-		cudaResult = cudaCreateTextureObject(&textureObjects[i], &resourceDesc, &textureDesc, nullptr);
-		checkCuda(cudaResult, "Texture object creation failed");
+		cudaResult = cudaCreateTextureObject(&textureObjects[2 * i], &resourceDesc, &textureDesc, nullptr);
+		checkCuda(cudaResult, "Color texture object creation failed");
+
+		//Metallic/roughness and normals - retain linear data values
+		textureDesc.sRGB = 0;
+
+		cudaResult = cudaCreateTextureObject(&textureObjects[2 * i + 1], &resourceDesc, &textureDesc, nullptr);
+		checkCuda(cudaResult, "Data texture object creation failed");
 	}
 	std::cout << "Created " << textureObjects.size() << " texture object(s)\n";
 
@@ -750,6 +761,7 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 	std::vector<float3> vertices;
 	std::vector<float3> vertexNormals;
 	std::vector<float2> vertexTexcoords;
+	std::vector<float4> vertexTangents;
 	std::vector<uint3> triangles;
 	std::vector<int> triangleMaterialIds;
 
@@ -798,6 +810,19 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 				vertexTexcoords.push_back(make_float2(uv.x, uv.y));
 			}
 		}
+		if (!mesh.tangents.empty() && mesh.tangents.size() != mesh.positions.size()) {
+			throw std::runtime_error("Tangent count does not match vertex count");
+		}
+
+		for (size_t v = 0; v < mesh.positions.size(); v++) {
+			if (mesh.tangents.empty()) {
+				vertexTangents.push_back(make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+			}
+			else {
+				const glm::vec4& tangent = mesh.tangents[v];
+				vertexTangents.push_back(make_float4(tangent.x, tangent.y, tangent.z, tangent.w));
+			}
+		}
 
 		for (const auto& t : mesh.triangles) {
 			triangles.push_back(make_uint3(vertexOffset + t[0], vertexOffset + t[1], vertexOffset + t[2]));
@@ -816,6 +841,7 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 	for (int v = 0; v < 4; ++v) {
 		vertexNormals.push_back(make_float3(0.f, 0.f, 0.f));
 		vertexTexcoords.push_back(make_float2(0.0f, 0.0f));
+		vertexTangents.push_back(make_float4(0.0f, 0.0f, 0.0f, 0.0f));
 	}
 
 	//Two triangles forming light
@@ -832,6 +858,7 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 	const size_t texcoordBytes = vertexTexcoords.size() * sizeof(float2);
 	const size_t indexBytes = triangles.size() * sizeof(uint3);
 	const size_t materialBytes = triangleMaterialIds.size() * sizeof(int);
+	const size_t tangentBytes = vertexTangents.size() * sizeof(float4);
 
 	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshVertices), vertexBytes);
 	checkCuda(cudaResult, "Mesh vertex allocation failed");
@@ -850,6 +877,12 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 
 	cudaResult = cudaMemcpy(dev_meshTexcoords, vertexTexcoords.data(), texcoordBytes, cudaMemcpyHostToDevice);
 	checkCuda(cudaResult, "Mesh texture coordinate upload failed");
+
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshTangents), tangentBytes);
+	checkCuda(cudaResult, "Mesh tangent allocation failed");
+
+	cudaResult = cudaMemcpy(dev_meshTangents, vertexTangents.data(), tangentBytes, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Mesh tangent upload failed");
 
 	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_meshIndices), indexBytes);
 	checkCuda(cudaResult, "Mesh index allocation failed");
@@ -1025,6 +1058,7 @@ void launchOptixPaths(
 	launchParams.gasHandle = gasHandle;
 	launchParams.vertices = dev_meshVertices;
 	launchParams.normals = dev_meshNormals;
+	launchParams.tangents = dev_meshTangents;
 	
 	launchParams.texcoords = dev_meshTexcoords;
 	launchParams.textures = dev_textureObjects;
@@ -1094,6 +1128,7 @@ void launchOptixIntersections(const PathSegment* paths, ShadeableIntersection* i
 	launchParams.gasHandle = gasHandle;
 	launchParams.vertices = dev_meshVertices;
 	launchParams.normals = dev_meshNormals;
+	launchParams.tangents = dev_meshTangents;
 	launchParams.texcoords = dev_meshTexcoords; //UV buffer
 	launchParams.textures = dev_textureObjects;
 	launchParams.triangles = dev_meshIndices;
@@ -1167,6 +1202,7 @@ void destroyOptixContext() {
 			textureObject = 0;
 		}
 	}
+	textureObjects.clear();
 
 	for (cudaArray_t& imageArray : dev_imageArrays) {
 		if (imageArray != nullptr) {
@@ -1176,6 +1212,12 @@ void destroyOptixContext() {
 		}
 	}
 	dev_imageArrays.clear();
+
+	if (dev_meshTangents != nullptr) {
+		cudaError_t result = cudaFree(dev_meshTangents);
+		checkCuda(result, "Mesh tangent cleanup failed");
+		dev_meshTangents = nullptr;
+	}
 
 	if (pathtracePipeline != nullptr) {
 		OptixResult result = optixPipelineDestroy(pathtracePipeline);

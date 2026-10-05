@@ -110,6 +110,66 @@ extern "C" __global__ void __closesthit__ch() {
 		}
 	}
 
+    result.surfaceTangent = glm::vec3(0.0f);
+    result.surfaceBitangent = glm::vec3(0.0f);
+
+    glm::vec3 tangent(0.0f);
+    float handedness = 1.0f;
+    bool hasTangent = false;
+
+    if (params.tangents != nullptr) {
+        const float4 t0 = params.tangents[triangle.x];
+        const float4 t1 = params.tangents[triangle.y];
+        const float4 t2 = params.tangents[triangle.z];
+
+        //W = 0 - marker for missing tangents
+        if (t0.w != 0.0f && t1.w != 0.0f && t2.w != 0.0f) {
+            tangent = w0 * glm::vec3(t0.x, t0.y, t0.z) +
+                w1 * glm::vec3(t1.x, t1.y, t1.z) +
+                w2 * glm::vec3(t2.x, t2.y, t2.z);
+
+            float interpolatedSign = w0 * t0.w + w1 * t1.w + w2 * t2.w;
+
+            handedness = interpolatedSign < 0.0f ? -1.0f : 1.0f; //checks for mirrored bitangent (if weighted sum of bary weight is negative) in case uv is flipped or mirrored
+            hasTangent = true;
+        }
+    }
+
+    if (!hasTangent && params.texcoords != nullptr) {
+        //derives directions from how the triangle's world space edges correspond to its uv edges
+        const float2 uv0 = params.texcoords[triangle.x];
+        const float2 uv1 = params.texcoords[triangle.y];
+        const float2 uv2 = params.texcoords[triangle.z];
+
+        const glm::vec2 deltaUV1(uv1.x - uv0.x, uv1.y - uv0.y);
+        const glm::vec2 deltaUV2(uv2.x - uv0.x, uv2.y - uv0.y);
+
+        const glm::vec3 edge1 = p1 - p0;
+        const glm::vec3 edge2 = p2 - p0;
+
+        const float determinant = deltaUV1.x * deltaUV2.y - deltaUV1.y * deltaUV2.x;
+
+        if (fabsf(determinant) > 0.000000000001f) {
+            tangent = (edge1 * deltaUV2.y - edge2 * deltaUV1.y) / determinant;
+            const glm::vec3 bitangent = (edge2 * deltaUV1.x - edge1 * deltaUV2.x) / determinant;
+
+            handedness = glm::dot(glm::cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
+
+            hasTangent = true;
+        }
+    }
+
+    //inerpolation can make the tangent slightly nonperpendicular to the normal
+    if (hasTangent) {
+        //Remove the component pointing along the normal
+        tangent -= normal * glm::dot(normal, tangent);
+
+        if (glm::dot(tangent, tangent) > 0.000000000001f) {
+            result.surfaceTangent = glm::normalize(tangent);
+            result.surfaceBitangent = handedness * glm::cross(normal, result.surfaceTangent);
+        }
+    }
+
 	//Forced flat shading
 	//normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
 	//Orient normal against incoming ray
@@ -118,8 +178,11 @@ extern "C" __global__ void __closesthit__ch() {
 
     result.geometricNormal = geometricNormal;
 
-	if (glm::dot(normal, rayDirection) > 0.0f) {
+	if (glm::dot(normal, rayDirection) > 0.000000000001f) {
 		normal = -normal;
+
+        result.surfaceTangent = -result.surfaceTangent;
+        result.surfaceBitangent = -result.surfaceBitangent;
 	}
 
 	result.surfaceNormal = normal;
@@ -143,6 +206,8 @@ extern "C" __global__ void __miss__ms() {
 	result.surfaceNormal.z = 0.0f;
 
     result.texcoord = glm::vec2(0.0f);
+    result.surfaceTangent = glm::vec3(0.0f);
+    result.surfaceBitangent = glm::vec3(0.0f);
 	
 	//printf("Ray missed\n");
 }
@@ -689,6 +754,93 @@ float metallicRoughnessPdf(const glm::vec3& nor, const glm::vec3& wo, const glm:
     return pSpecular * pdfSpecular + (1.0f - pSpecular) * pdfDiffuse;
 }
 
+static __forceinline__ __device__
+float4 sampleMaterialTexture(int textureId, bool color, const glm::vec2& uv, float4 fallback) {
+    if (textureId < 0 || params.textures == nullptr) {
+        return fallback;
+    }
+
+    //Even slot - color with sRGB decoding, Odd slot - data without sRGB decoding
+    size_t slot = 2 * static_cast<size_t>(textureId);
+
+    if (!color) {
+        slot += 1;
+    }
+
+    cudaTextureObject_t texture = params.textures[slot];
+
+    if (texture == 0) {
+        return fallback;
+    }
+
+    return tex2D<float4>(texture, uv.x, uv.y);
+}
+
+static __forceinline__ __device__
+void applyMaterialTextures(Material& material, ShadeableIntersection& hit, const glm::vec3& rayDirection) {
+    if (material.emittance > 0.0f) {
+        return;
+    }
+
+    //Base color
+    if (material.baseColorTextureId >= 0) {
+        float4 texel = sampleMaterialTexture(material.baseColorTextureId, true, hit.texcoord, make_float4(1, 1, 1, 1));
+
+        material.color *= glm::vec3(texel.x, texel.y, texel.z);
+    }
+
+    //Metallic Roughness map
+    if (material.useMetallicRoughness != 0 && material.metallicRoughnessTextureId >= 0) {
+        float4 texel = sampleMaterialTexture(material.metallicRoughnessTextureId, false, hit.texcoord, make_float4(1, 1, 1, 1));
+        
+        float textureRoughness = glm::clamp(texel.y, 0.0f, 1.0f);
+        float textureMetallic = glm::clamp(texel.z, 0.0f, 1.0f);
+
+        // material.roughness already has roughnessFactor squared
+        material.roughness *= textureRoughness * textureRoughness;
+        material.metallic *= textureMetallic;
+    }
+
+    if (material.useMetallicRoughness == 0 || material.hasRefractive > 0.0f || material.normalTextureId < 0) {
+        return;
+    }
+
+    // Missing or degenerate tangent frame,  keep the original normal
+    if (glm::dot(hit.surfaceTangent, hit.surfaceTangent) <= 0.000000000001f ||
+        glm::dot(hit.surfaceBitangent, hit.surfaceBitangent) <= 0.000000000001f) {
+        return;
+    }
+
+    float4 texel = sampleMaterialTexture(material.normalTextureId, false, hit.texcoord, make_float4(0.5f, 0.5f, 1.0f, 1.0f));
+
+    // Decode RGB from 0 - 1 into a tangent space direction, normalScale changes the strength of the sideways components.
+    glm::vec3 localNormal((2.0f * texel.x - 1.0f) * material.normalScale, (2.0f * texel.y - 1.0f) * material.normalScale, 2.0f * texel.z - 1.0f);
+    if (glm::dot(localNormal, localNormal) <= 0.000000000001f) {
+        return;
+    }
+
+    localNormal = glm::normalize(localNormal);
+
+    // Tangent to world space
+    glm::vec3 mappedNormal = hit.surfaceTangent * localNormal.x + hit.surfaceBitangent * localNormal.y + hit.surfaceNormal * localNormal.z;
+    if (glm::dot(mappedNormal, mappedNormal) <= 0.000000000001f) {
+        return;
+    }
+
+    mappedNormal = glm::normalize(mappedNormal);
+    glm::vec3 wo = -glm::normalize(rayDirection);
+
+    glm::vec3 geometricNormal = glm::normalize(hit.geometricNormal);
+    if (glm::dot(geometricNormal, wo) < 0.0f) {
+        geometricNormal = -geometricNormal;
+    }
+
+    //Only accept a mapped normal facing the geometric hemishpere and wo, safeguarding extreme normal map directions
+    if (glm::dot(mappedNormal, geometricNormal) > 0.0f && glm::dot(mappedNormal, wo) > 0.0f) {
+        hit.surfaceNormal = mappedNormal;
+    }
+}
+
 //__forceinline__ tells the compiler to inline the function into the caller rather than use an ordinary function call
 // 1: pure refractive
 // 2: metal/roughness (when 0, still diffuse + specular (plastic), more metallic means specular color moves towards the base color and removes diffuse)
@@ -705,15 +857,11 @@ void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersect
         thrust::default_random_engine rng = raygenMakeRandomEngine(params.iteration, path.pixelIndex, path.remainingBounces);
 
         Material material = params.materials[intersection.materialId];
-        //Apply the base color texture to non emissive materials
-        if (material.emittance <= 0.0f && material.baseColorTextureId >= 0) {
-            cudaTextureObject_t texture = params.textures[material.baseColorTextureId];
-            float4 texel = tex2D<float4>(texture, intersection.texcoord.x, intersection.texcoord.y);
 
-            material.color *= glm::vec3(texel.x, texel.y, texel.z);
-        }
+        //apply textures
+        applyMaterialTextures(material, intersection, path.ray.direction);
+
         glm::vec3 materialColor = material.color;
-
 
         //light source
         if (material.emittance > 0.0f) {

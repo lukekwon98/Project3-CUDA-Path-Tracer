@@ -354,7 +354,7 @@ int main(int argc, char** argv)
     std::vector<TextureData> loadedTextures;
 
     // loadGltf into loadedMeshes and loadedImages
-    bool loaded = loadGltf("../scenes/Suzanne/Suzanne.gltf", loadedMeshes, loadedImages, loadedTextures);
+    bool loaded = loadGltf("../scenes/DamagedHelmet/DamagedHelmet.gltf", loadedMeshes, loadedImages, loadedTextures);
     if (loaded == false) {
         return EXIT_FAILURE;
     }
@@ -400,10 +400,11 @@ int main(int argc, char** argv)
         material.emittance = 0.0f;
         material.hasRefractive = 0.0f;
         material.hasReflective = 0.0f;
-        material.roughness = mesh.roughnessFactor * mesh.roughnessFactor;
+        material.roughness = mesh.roughnessFactor * mesh.roughnessFactor; //GPU multiplies this by texture.g * texture.g. final alpha is (factor*texture.g)^2, no need to square in BSDF
         //when useMetallicRoughness = 1, we still get reflective (depending on roughness)
         material.useMetallicRoughness = 1;
         material.metallic = mesh.metallicFactor;
+        material.metallicRoughnessTextureId = mesh.gltfMetallicRoughnessTextureIndex;
 
         scene->materials.push_back(material);
     }

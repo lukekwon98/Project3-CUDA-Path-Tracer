@@ -1,0 +1,35 @@
+Suzanne texture-map diagnostics
+
+Copy both PNG files into the project img directory, next to texture_test.jpg.
+These are ordinary offline image files. No procedural texture code is added to the renderer.
+
+Assuming the scene still has one image and one texture:
+Append images with URIs ../../img/diagnostic_metallic_roughness.png and ../../img/diagnostic_normal.png.
+Append textures {"source":1,"sampler":0} and {"source":2,"sampler":0}.
+
+For the first test, set Suzanne pbrMetallicRoughness to:
+{"baseColorFactor":[0.8,0.8,0.8,1.0],"metallicFactor":1.0,"roughnessFactor":1.0,"metallicRoughnessTexture":{"index":1,"texCoord":0}}
+Temporarily omit baseColorTexture so the current image does not obscure the material test.
+Do not add normalTexture until the metallic-roughness test works.
+
+Metallic-roughness PNG, in UV/image coordinates (not screen quadrants):
+Top left: nonmetal, roughness 0.2
+Top right: nonmetal, roughness about 0.851
+Bottom left: metal, roughness 0.2
+Bottom right: metal, roughness about 0.851
+R=255 is unused; G=roughness; B=metallic; A=255 is unused.
+Set metallicFactor=0 temporarily: all regions should become nonmetal.
+
+Second test: use constant metallicFactor=0 and roughnessFactor=0.5; temporarily remove metallicRoughnessTexture.
+Add normalTexture alongside pbrMetallicRoughness:
+{"index":2,"texCoord":0,"scale":1.0}
+Left UV half is approximately a flat normal; right UV half tilts about 30 degrees toward +T.
+Compare scale=0 and scale=1. This changes shading, not geometry or silhouette.
+8-bit quantization makes the neutral X/Y components slightly nonzero at scale=1.
+
+Final test: restore metallicRoughnessTexture with factors 1, plus normalTexture at scale 1.
+Restore the original baseColorFactor/baseColorTexture when finished.
+Restart the application to reload scene JSON and reset accumulation for each test.
+Keep camera, HDR, exposure, and MIS settings fixed during comparisons.
+Expected material upload log with these two added images: 3 images, 6 texture objects.
+This does not include the separate environment texture.

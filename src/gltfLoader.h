@@ -61,6 +61,11 @@ struct MeshData {
 	float metallicFactor = 1.0f;
 	float roughnessFactor = 1.0f;
 	glm::vec4 baseColorFactor = glm::vec4(1.0f);
+
+	std::vector<glm::vec4> tangents; //world-space xyz
+	int gltfMetallicRoughnessTextureIndex = -1;
+	int gltfNormalTextureIndex = -1;
+	float normalScale = 1.0f;
 };
 
 bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::vector<ImageData>& outputImages, std::vector<TextureData>& outputTextures);

@@ -38,6 +38,7 @@ struct LaunchParams {
 
 	const float3* vertices;
 	const float3* normals;
+	const float4* tangents;
 	const float2* texcoords;
 	const uint3* triangles;
 	const int* triangleMaterialIds;

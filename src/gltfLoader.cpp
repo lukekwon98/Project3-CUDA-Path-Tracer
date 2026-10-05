@@ -73,7 +73,88 @@ void traverseMesh(const tinygltf::Model& model, int nodeIndex, const glm::mat4& 
 //Every texture uses sRGB decoding.
 //Every texture uses linear filtering, regardless of the glTF filter settings.
 
-//Only TEXCOORD_0 is supported.
+static void validateMaterialTexture(const tinygltf::Model& model, const MeshData& mesh,
+	int textureIndex, int texCoord, const char* label) {
+	//ignore unused textures
+	if (textureIndex < 0) return;
+	//check if texture index is larger than total number of textures
+	if (size_t(textureIndex) >= model.textures.size()) {
+		throw std::runtime_error(std::string(label) + ": invalid texture index");
+	}
+	//texture must be mapped using the first UV channel - TEXCOORD_0, this means no complicated flattening/remapping
+	if (texCoord != 0 || mesh.texcoords.size() != mesh.positions.size()) {
+		throw std::runtime_error(std::string(label) + ": requires TEXCOORD_0");
+	}
+}
+
+static void loadMeshTangents(const tinygltf::Model& model, const tinygltf::Primitive& primitive, 
+	const glm::mat4& worldTransform, MeshData& mesh) {
+	auto it = primitive.attributes.find("TANGENT");
+	if (it == primitive.attributes.end()) {
+		return;
+	}
+
+	const tinygltf::Accessor& acc = model.accessors.at(it->second);
+	if (acc.type != TINYGLTF_TYPE_VEC4 || acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
+		acc.normalized || acc.sparse.isSparse || acc.bufferView < 0 ||
+		acc.count != mesh.positions.size() || mesh.normals.size() != mesh.positions.size()) {
+		throw std::runtime_error("Unsupported tangent accessor or missing normals");
+	}
+
+	const tinygltf::BufferView& view = model.bufferViews.at(acc.bufferView);
+	const tinygltf::Buffer& buffer = model.buffers.at(view.buffer);
+
+	const size_t elementBytes = 4 * sizeof(float);
+	const size_t stride = view.byteStride ? view.byteStride : elementBytes;
+
+	if (view.byteOffset > buffer.data.size() ||
+		view.byteLength > buffer.data.size() - view.byteOffset ||
+		acc.byteOffset > view.byteLength || stride < elementBytes) {
+		throw std::runtime_error("Invalid tangent buffer layout");
+	}
+
+	const size_t available = view.byteLength - acc.byteOffset;
+	if (acc.count > 0 && (available < elementBytes ||
+		acc.count - 1 >(available - elementBytes) / stride)) {
+		throw std::runtime_error("Tangent data exceeds buffer view");
+	}
+
+	const glm::mat3 linear(worldTransform);
+	const float determinant = glm::determinant(linear);
+	if (!std::isfinite(determinant) || determinant == 0.0f) {
+		throw std::runtime_error("Singular tangent transform");
+	}
+
+	const float transformSign = determinant < 0.0f ? -1.0f : 1.0f;
+	const size_t start = view.byteOffset + acc.byteOffset;
+	mesh.tangents.resize(acc.count);
+
+	for (size_t v = 0; v < acc.count; v++) {
+		float xyzw[4]; //get a tangent
+		std::memcpy(xyzw, buffer.data.data() + start + v * stride, sizeof(xyzw));
+		if (!std::isfinite(xyzw[0]) || !std::isfinite(xyzw[1]) || !std::isfinite(xyzw[2]) ||
+			(xyzw[3] != -1.0f && xyzw[3] != 1.0f)) {
+			throw std::runtime_error("Invalid tangent");
+		}
+
+		glm::vec3 t = linear * glm::vec3(xyzw[0], xyzw[1], xyzw[2]); //tangents are directions so just use linear transform instead of invtrans, localToWorld
+		glm::vec3 n = mesh.normals[v]; // already transformed and normalized
+		
+		t -= n * glm::dot(n, t);
+		
+		float lengthSquared = glm::dot(t, t);
+
+		//must not be infinite and must be non zero
+		if (!std::isfinite(lengthSquared) || lengthSquared <= 0.000000000001f) {
+			throw std::runtime_error("Degenerate transformed tangent");
+		}
+
+		t = glm::normalize(t);
+		mesh.tangents[v] = glm::vec4(t, xyzw[3] * transformSign);
+	}
+}
+
+//Only TEXCOORD_0 is supported: acts as a guide on how to assign a 2D coordinate to every 3D vertex, limits baked lightmaps, detail/tiling maps, decals/logos
 bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::vector<ImageData>& outputImages, std::vector<TextureData>& outputTextures) {
 	std::vector<MeshData> loadedMeshes;
 
@@ -533,6 +614,21 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::v
 				meshData.metallicFactor = glm::clamp(static_cast<float>(pbr.metallicFactor), 0.0f, 1.0f);
 				meshData.roughnessFactor = glm::clamp(static_cast<float>(pbr.roughnessFactor), 0.0f, 1.0f);
 			
+				const tinygltf::TextureInfo& mr = pbr.metallicRoughnessTexture;
+				validateMaterialTexture(model, meshData, mr.index, mr.texCoord, "Metallic-roughness texture");
+				meshData.gltfMetallicRoughnessTextureIndex = mr.index;
+
+				const tinygltf::NormalTextureInfo& normalMap = material.normalTexture;
+				validateMaterialTexture(model, meshData, normalMap.index, normalMap.texCoord, "Normal texture");
+				meshData.gltfNormalTextureIndex = normalMap.index;
+				meshData.normalScale = static_cast<float>(normalMap.scale);
+
+				//Leave it at this for now, no KHR
+				if (pbr.baseColorTexture.extensions.count("KHR_texture_transform") != 0 ||
+					mr.extensions.count("KHR_texture_transform") != 0 ||
+					normalMap.extensions.count("KHR_texture_transform") != 0) {
+					throw std::runtime_error("KHR_texture_transform is not supported yet");
+				}
 			}
 
 			std::cout << "Base color: "
@@ -542,6 +638,8 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::v
 				<< meshData.baseColorFactor.a << '\n';
 
 			std::cout << "Base color texture index: " << meshData.gltfBaseColorTextureIndex << std::endl;
+
+			loadMeshTangents(model, primitive, instance.worldTransform, meshData);
 
 			loadedMeshes.push_back(std::move(meshData));
 		}
@@ -554,6 +652,10 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::v
 		if (image.width <= 0 || image.height <= 0 || image.image.empty()) {
 			std::cerr << "Image has no decoded pixel data\n";
 			return false;
+		}
+
+		if (image.pixel_type != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE || image.bits != 8 || image.component != 4) {
+			throw std::runtime_error("Material textures require decoded unsigned 8-bit RGBA images");
 		}
 
 		ImageData imageData;

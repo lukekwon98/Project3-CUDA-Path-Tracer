@@ -74,32 +74,39 @@ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int de
 //Kernel that writes the image to the OpenGL PBO directly.
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* image)
 {
-    int x = (blockIdx.x * blockDim.x) + threadIdx.x;
-    int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x < resolution.x && y < resolution.y)
-    {
-        int index = x + (y * resolution.x);
-        glm::vec3 pix = image[index];
-
-        glm::ivec3 color;
-        color.x = glm::clamp((int)(pix.x / iter * 255.0), 0, 255);
-        color.y = glm::clamp((int)(pix.y / iter * 255.0), 0, 255);
-        color.z = glm::clamp((int)(pix.z / iter * 255.0), 0, 255);
-
-        //const float exposure = 0.1f;
-        //glm::vec3 displayColor = exposure * pix / static_cast<float>(iter);
-
-        //color.x = glm::clamp((int)(displayColor.x * 255.0f), 0, 255);
-        //color.y = glm::clamp((int)(displayColor.y * 255.0f), 0, 255);
-        //color.z = glm::clamp((int)(displayColor.z * 255.0f), 0, 255);
-
-        // Each thread writes one pixel location in the texture (textel)
-        pbo[index].w = 0;
-        pbo[index].x = color.x;
-        pbo[index].y = color.y;
-        pbo[index].z = color.z;
+    if (x >= resolution.x || y >= resolution.y || iter <= 0) {
+        return;
     }
+
+    int index = x + y * resolution.x;
+
+    //Average the accumulated linear radiance
+    glm::vec3 color = image[index] / static_cast<float>(iter);
+
+    //Display exposure for testing
+    float exposure = 1.0f;
+    color *= exposure;
+
+    color = glm::max(color, glm::vec3(0.0f));
+
+    //Reinhard
+    color = color / (glm::vec3(1.0f) + color);
+
+    //Gamma
+    color.r = powf(color.r, 1.0f / 2.2f);
+    color.g = powf(color.g, 1.0f / 2.2f);
+    color.b = powf(color.b, 1.0f / 2.2f);
+
+    color = glm::clamp(color, glm::vec3(0.0f), glm::vec3(1.0f));
+
+    pbo[index] = make_uchar4(
+        (unsigned char)(color.r * 255.0f + 0.5f),
+        (unsigned char)(color.g * 255.0f + 0.5f),
+        (unsigned char)(color.b * 255.0f + 0.5f),
+        255);
 }
 
 static Scene* hst_scene = NULL;

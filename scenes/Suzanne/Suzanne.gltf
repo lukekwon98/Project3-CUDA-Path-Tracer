@@ -183,6 +183,12 @@
   "images": [
     {
       "uri": "../../img/texture_test.jpg"
+    },
+    {
+      "uri": "../../img/diagnostic_metallic_roughness.png"
+    },
+    {
+      "uri": "../../img/diagnostic_normal.png"
     }
   ],
   "samplers": [
@@ -197,24 +203,33 @@
     {
       "source": 0,
       "sampler": 0
+    },
+    {
+      "source": 1,
+      "sampler": 0
+    },
+    {
+      "source": 2,
+      "sampler": 0
     }
   ],
   "materials": [
     {
       "name": "SuzanneDiffuse",
       "pbrMetallicRoughness": {
-        "baseColorFactor": [
-          1.0,
-          1.0,
-          1.0,
-          1.0
-        ],
+        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
         "baseColorTexture": {
-          "index": 0,
-          "texCoord": 0
+          "index": 0
         },
-        "metallicFactor": 0.0,
-        "roughnessFactor": 1.0
+        "metallicFactor": 1.0,
+        "roughnessFactor": 1.0,
+        "metallicRoughnessTexture": {
+          "index": 1
+        }
+      },
+      "normalTexture": {
+        "index": 2,
+        "scale": 1.0
       }
     },
     {

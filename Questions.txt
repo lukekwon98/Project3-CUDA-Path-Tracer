@@ -1,0 +1,36 @@
+TODO:
+No reinhart, do I need gamma?
+GUI that dynamically changes light pos would be cool, or with keyboard
+
+Environment BSDF?
+Check why there's fireflies in non-MIS version
+How does having MIS reduce those outliers
+
+With MIS off, the code only looks up HDR radiance when a ray misses; it doesn’t call environmentPdf() or search the CDF. The CDF may still be built and uploaded, but that’s startup work.
+
+can we incorporate environmentPdf into non-MIS? if not, is that why only MIS is reducing the outlying pixels?
+
+What does only texCoord_0 is supported mean?
+is this very limiting?
+
+What is a normal map scale
+
+gltf provides tangnets?
+why?
+why not store bitangents?
+are we also taking it to world space by multiplying wordTransform?
+what is t -= n* glm::dot(n,t);
+
+when does the tbn matrix come into play?
+
+Walk through environment MIS for me one again
+
+//Both handles reference the same image allocation
+
+Walk me through handedness bitangent computations
+
+normalscale?
+
+srgb decoding? map to linear space, don't map to linear space?
+
+gltf textures source, sampler?
