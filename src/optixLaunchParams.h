@@ -46,6 +46,10 @@ struct LaunchParams {
 	PathSegment* outputPaths; // Write each completed path back for finalGather()
 	const Material* materials; //read material colors and emission during shading
 	const cudaTextureObject_t* textures;
+	cudaTextureObject_t environmentTexture;
+	const double* environmentCdf;
+	int environmentWidth;
+	int environmentHeight;
 	int iteration; //seed the random generator for the current sample
 
 	//Also including camera

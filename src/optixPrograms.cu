@@ -10,6 +10,8 @@
 #include "intersections.h"
 #include "utilities.h"
 
+#define USE_ENVIRONMENT_MIS 1
+
 // OptiX supplies the variable's contents when it launches
 // extern "C" preserves the exact symbol name - params
 extern "C" {
@@ -320,6 +322,7 @@ glm::vec3 f_diffuse(const glm::vec3& albedo) {
 static __forceinline__ __device__
 glm::vec3 f_metallic_roughness(const glm::vec3& albedo, const glm::vec3& nor, const glm::vec3& wo,
     const glm::vec3& wi, float roughness, float metallic) {
+
     glm::vec3 N = nor;
 
     float NdotV = glm::clamp(glm::dot(N, wo), 0.0f, 1.0f);
@@ -411,7 +414,7 @@ glm::vec3 Sample_f_metallic_roughness(const glm::vec3& albedo, const glm::vec3& 
     }
 
     float pdfSpecular = TrowbridgeReitzPdf(nor, wh, roughness) / (4.0f * woDotWh);
-    float pdfDiffuse = cosThetaI / PI;
+    float pdfDiffuse = cosThetaI / PI; //cosine weighted sampler, diffuse direction density
 
     pdf = pSpecular * pdfSpecular + (1.0f - pSpecular) * pdfDiffuse;
 
@@ -450,14 +453,254 @@ glm::vec3 Sample_f_microfacet_refl(const glm::vec3& albedo, const glm::vec3& nor
     return f_microfacet_refl(albedo, nor, wo, wi, roughness);
 }
 
+//from 5610 pbr.frag sampleSphericalMap
+static __forceinline__ __device__
+glm::vec3 sampleEnvironment(const glm::vec3& direction) {
+    if (params.environmentTexture == 0) {
+        return glm::vec3(0.0f);
+    }
+
+    glm::vec3 dir = glm::normalize(direction);
+
+    float u = atan2f(dir.z, dir.x) / TWO_PI + 0.5f; //horizontal anglea round the environment
+    float v = 0.5f - asinf(glm::clamp(dir.y, -1.0f, 1.0f)) / PI; // asinf - elevation, minus makes upward rays sample the top of the unflipped image
+    
+    float4 texel = tex2D<float4>(params.environmentTexture, u, v);
+
+    return glm::vec3(texel.x, texel.y, texel.z);
+}
+
+static __forceinline__ __device__
+double environmentPixelSolidAngle(int y) {
+    double pi = 3.14159265358979323846;
+    double thetaTop = pi * y / params.environmentHeight;
+    double thetaBottom = pi * (y + 1) / params.environmentHeight;
+
+    return (2.0 * pi / params.environmentWidth) * (cos(thetaTop) - cos(thetaBottom));
+}
+
+static __forceinline__ __device__
+glm::vec3 sampleEnvironmentDirection(thrust::default_random_engine& rng, float& pdf) {
+    pdf = 0.0f;
+
+    int width = params.environmentWidth;
+    int height = params.environmentHeight;
+
+    if (params.environmentCdf == nullptr || width <= 0 || height <= 0) {
+        return glm::vec3(0.0f);
+    }
+
+    thrust::uniform_real_distribution<double> u01(0.0, 1.0);
+
+    double select = fmin(u01(rng), 0.9999999999999999); //safety clamp to prevent out of bounds indxing errors, 1.0, binary search or mapping math look for upper bound of CDF, which might return pixelCount = indexing error (is largest possible double)
+    size_t pixelCount = static_cast<size_t>(width) * height;
+
+    //find i which sufficies cdf[i] <= select < cdf[i + 1]
+    size_t low = 0;
+    size_t high = pixelCount;
+
+    //binary search pixel, select pixel according to CDF
+    while (low + 1 < high) {
+        size_t middle = low + (high - low) / 2;
+
+        if (params.environmentCdf[middle] <= select) {
+            low = middle;
+        }
+        else {
+            high = middle;
+        }
+    }
+    size_t pixelIndex = low;
+    int x = static_cast<int>(pixelIndex % width); //oh no
+    int y = static_cast<int>(pixelIndex / width);
+
+    //probability of choosing the entire pixel
+    double probability = params.environmentCdf[pixelIndex + 1] - params.environmentCdf[pixelIndex];
+
+    //select a direction inside the pixel's spherical area
+    // spherical area covered by that pixel in steradians
+    double solidAngle = environmentPixelSolidAngle(y);
+
+    if (!(probability > 0.0) || !(solidAngle > 0.0)) {
+        return glm::vec3(0.0f);
+    }
+
+    double pi = 3.14159265358979323846;
+
+    double xiU = fmin(u01(rng), 0.9999999999999999); //random u
+    double xiV = fmin(u01(rng), 0.9999999999999999); //random v
+
+    //horizontal position
+    double u = (x + xiU) / width; // x is the column, xiU chooses fractional position inside it, dividing by width normalizes u
+    double phi = (u - 0.5) * (2.0 * pi); //converting u into phi gives the horinzontal angle (-180, 180)
+
+    //vertical position (theta is measured downward from +Y)
+    double cosTop = cos(pi * y / height);
+    double cosBottom = cos(pi * (y + 1) / height);
+
+    //Uniform solid angle sampling inside selected pixel
+    //interpolate between top and bottom boundareies in cos(theta) because uniform horizontal angle and uniform cos(theta) produce uniform spherical area
+    double cosTheta = cosTop + xiV * (cosBottom - cosTop);
+
+    //trig identity
+    double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta)); //interpolate using cosTheta rather than theta to sample uniformly in solid angle
+
+    //probability is the whole pixel's probability, so divide it by solidAngle
+    pdf = static_cast<float>(probability / solidAngle);
+
+    //spherical coords become a direction
+    return glm::normalize(glm::vec3(
+        static_cast<float>(sinTheta * cos(phi)), static_cast<float>(cosTheta), 
+        static_cast<float>(sinTheta * sin(phi))));
+}
+
+//for MIS, environment PDF for directions chosen by BSDF
+//what probability density would be assigned to each direction for the environment sampler
+//1. Convert the supplied direction to horizontal angle and vertical angle
+//2. Find the corresponding HDR pixel
+//3. Retrieve that pixel's probability from the CDf
+//4. Divide by its solid angle
+static __forceinline__ __device__
+float environmentPdf(const glm::vec3& direction) {
+    int width = params.environmentWidth;
+    int height = params.environmentHeight;
+
+    if (params.environmentCdf == nullptr || width <= 0 || height <= 0) {
+        return 0.0f;
+    }
+
+    double dx = direction.x;
+    double dy = direction.y;
+    double dz = direction.z;
+
+    if (dx * dx + dy * dy + dz * dz <= 0.0) {
+        return 0.0f;
+    }
+
+    double pi = 3.14159265358979323846;
+
+    //find corresponding pixel on HDR
+    //atan(dz, dx) recovers horizontal angle, divide by 2*pi + 0.5 swithces range to 0 , 1
+    double u = atan2(dz, dx) / (2.0 * pi) + 0.5;
+    u -= floor(u); //Wrap horizontal seam to [0,1), equivaelnt directions at the two panormala's edges select the same column
+
+    //vertical angle
+    //computes angle from +Y, sqrt is the direction's horizontal length
+    //sqrt(dx^2, dz^2 = sintheta, dy = costheta
+    double theta = atan2(sqrt(dx * dx + dz * dz), dy);
+
+    int x = static_cast<int>(u * width);
+    int y = static_cast<int>((theta / pi) * height);
+
+    if (x >= width){
+        x = width - 1;
+    }
+    if (y >= height) {
+        y = height - 1;
+    }
+
+    //get the probability of selecting the pixel
+    size_t pixelIndex = static_cast<size_t>(y) * width + x;
+    double probability = params.environmentCdf[pixelIndex + 1] - params.environmentCdf[pixelIndex];
+
+    //divide pixel probability by solid angle
+    double solidAngle = environmentPixelSolidAngle(y);
+
+    float pdf;
+    if (solidAngle > 0.0f) {
+        pdf = static_cast<float>(probability / solidAngle);
+    }
+    else {
+        pdf = 0.0f;
+    }
+
+    return pdf;
+}
+
+//shadow feeler ray
+static __forceinline__ __device__
+bool isEnvironmentVisible(const glm::vec3& hitPoint, const glm::vec3& geometricNormal, const glm::vec3& wi) {
+    float offsetSign = glm::dot(geometricNormal, wi) >= 0.0f ? 1.0f : -1.0f;
+    glm::vec3 origin = hitPoint + offsetSign * 0.001f * geometricNormal;
+
+    unsigned int index = optixGetLaunchIndex().x;
+
+    optixTrace(
+        params.gasHandle,
+        make_float3(origin.x, origin.y, origin.z),
+        make_float3(wi.x, wi.y, wi.z),
+        0.001f,
+        FLT_MAX,
+        0.0f,
+        OptixVisibilityMask(255),
+        OPTIX_RAY_FLAG_NONE,
+        0,
+        1,
+        0);
+
+    return params.intersections[index].t < 0.0f;
+}
+
+//MIS powerheuristic
+static __forceinline__ __device__
+float powerHeuristic(float pdfA, float pdfB) {
+    if (!(pdfA > 0.0f)) {
+        return 0.0f;
+    }
+    if (!(pdfB > 0.0f)) {
+        return 1.0f;
+    }
+
+    float scale = fmaxf(pdfA, pdfB);
+    float a = pdfA / scale;
+    float b = pdfB / scale;
+
+    return(a * a) / (a * a + b * b);
+}
+
+//diffuse/specular mixture due to the random choice implementation
+static __forceinline__ __device__
+float metallicRoughnessPdf(const glm::vec3& nor, const glm::vec3& wo, const glm::vec3& wi, float roughness, float metallic) {
+    float NoV = glm::dot(nor, wo);
+    float NoL = glm::dot(nor, wi);
+
+    if (NoV <= 0.0f || NoL <= 0.0f) {
+        return 0.0f;
+    }
+
+    glm::vec3 wh = wo + wi;
+
+    if (glm::dot(wh, wh) <= 0.0f) {
+        return 0.0f;
+    }
+
+    wh = glm::normalize(wh);
+
+    const float VoH = glm::dot(wo, wh);
+    if (VoH <= 0.0f) {
+        return 0.0f;
+    }
+
+
+    const float pSpecular = 0.5f + 0.5f * metallic;
+    const float pdfSpecular = TrowbridgeReitzPdf(nor, wh, roughness) / (4.0f * VoH);
+    const float pdfDiffuse = NoL / PI;
+
+    return pSpecular * pdfSpecular + (1.0f - pSpecular) * pdfDiffuse;
+}
+
 //__forceinline__ tells the compiler to inline the function into the caller rather than use an ordinary function call
 // 1: pure refractive
 // 2: metal/roughness (when 0, still diffuse + specular (plastic), more metallic means specular color moves towards the base color and removes diffuse)
 // 3: pure reflective (+ roughness)
 // 4: pure diffuse
 static __forceinline__ __device__
-void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersection) {
+void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersection, 
+    glm::vec3& accumulatedLight, float& previousBsdfPdf, bool& previousEnvironmentMIS) {
     if (intersection.t > 0.0f) {
+
+        previousEnvironmentMIS = false;
+        previousBsdfPdf = 0.0f;
 
         thrust::default_random_engine rng = raygenMakeRandomEngine(params.iteration, path.pixelIndex, path.remainingBounces);
 
@@ -474,7 +717,8 @@ void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersect
 
         //light source
         if (material.emittance > 0.0f) {
-            path.color *= material.color * material.emittance;
+            accumulatedLight += path.color * material.color * material.emittance;
+
             path.remainingBounces = 0;
             return;
         }
@@ -543,6 +787,31 @@ void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersect
             float roughness = glm::clamp(material.roughness, 0.001f, 1.0f);
             float metallic = glm::clamp(material.metallic, 0.0f, 1.0f);
 
+            bool useEnvironmentMIS = USE_ENVIRONMENT_MIS != 0 && params.environmentTexture != 0 &&
+                params.environmentCdf != nullptr && params.environmentWidth > 0 && params.environmentHeight > 0 &&
+                path.remainingBounces > 1;
+
+            if (useEnvironmentMIS) {
+                float lightPdf = 0.0f;
+                glm::vec3 wiLight = sampleEnvironmentDirection(rng, lightPdf);
+                float NoL = glm::dot(nor, wiLight);
+
+
+                if (lightPdf > 0.0f && NoL > 0.0f && glm::dot(geometricNormal, wiLight) > 0.0f) {
+                    glm::vec3 directHitPoint = path.ray.origin + intersection.t * path.ray.direction;
+
+                    if (isEnvironmentVisible(directHitPoint, geometricNormal, wiLight)){
+                        glm::vec3 fLight = f_metallic_roughness(material.color, nor, wo, wiLight, roughness, metallic);
+
+                        float bsdfPdf = metallicRoughnessPdf(nor, wo, wiLight, roughness, metallic);
+
+                        float weight = powerHeuristic(lightPdf, bsdfPdf);
+
+                        accumulatedLight += path.color * fLight * sampleEnvironment(wiLight) * (NoL * weight / lightPdf);
+                        }
+                }
+            }
+
             glm::vec3 wiW;
             float pdf = 0.0f;
 
@@ -555,6 +824,9 @@ void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersect
             }
 
             float cosThetaI = glm::clamp(glm::dot(nor, wiW), 0.0f, 1.0f);
+
+            previousBsdfPdf = pdf;
+            previousEnvironmentMIS = useEnvironmentMIS;
 
             path.color *= f * cosThetaI / pdf;
 
@@ -660,7 +932,16 @@ void raygenShadeFakeMaterial(PathSegment& path, ShadeableIntersection& intersect
         }
     }
     else {
-        path.color = glm::vec3(0.0f);
+        float weight = 1.0f;
+
+        if (previousEnvironmentMIS) {
+            float lightPdf = environmentPdf(path.ray.direction);
+            weight = powerHeuristic(previousBsdfPdf, lightPdf);
+        }
+
+        accumulatedLight += path.color * sampleEnvironment(path.ray.direction) * weight;
+        //path.color = glm::vec3(0.0f); -> upon miss, now sample environment map
+        
         path.remainingBounces = 0;
         return;
     }
@@ -746,6 +1027,13 @@ extern "C" __global__ void __raygen__pathtrace()
         path = params.paths[index];
     }
 
+    //when updating directly to path.color, it served 2 roles. 1. during bouncing - throughput(the weight accumulated from material interactions), 2. when reaching a light - the completed lighting contribution
+    //this worked only because the path collected light only when it terminated, but in order to add direct sampling we need throughput
+    glm::vec3 accumulatedLight(0.0f);
+
+    float previousBsdfPdf = 0.0f;
+    bool previousEnvironmentMIS = false;
+
     while (path.remainingBounces > 0) {
         const float3 origin = make_float3(path.ray.origin.x,path.ray.origin.y,path.ray.origin.z);
         const float3 direction = make_float3(path.ray.direction.x,path.ray.direction.y,path.ray.direction.z);
@@ -767,8 +1055,10 @@ extern "C" __global__ void __raygen__pathtrace()
         // optixTrace returns after the selected program completes.
         ShadeableIntersection intersection = params.intersections[index];
 
-        raygenShadeFakeMaterial(path, intersection);
+        raygenShadeFakeMaterial(path, intersection, accumulatedLight, previousBsdfPdf, previousEnvironmentMIS);
     }
+
+    path.color = accumulatedLight;
 
     // Preserve pixelIndex for the existing finalGather kernel.
     params.outputPaths[index] = path;

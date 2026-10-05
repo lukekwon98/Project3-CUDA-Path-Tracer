@@ -87,6 +87,13 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
         color.y = glm::clamp((int)(pix.y / iter * 255.0), 0, 255);
         color.z = glm::clamp((int)(pix.z / iter * 255.0), 0, 255);
 
+        //const float exposure = 0.1f;
+        //glm::vec3 displayColor = exposure * pix / static_cast<float>(iter);
+
+        //color.x = glm::clamp((int)(displayColor.x * 255.0f), 0, 255);
+        //color.y = glm::clamp((int)(displayColor.y * 255.0f), 0, 255);
+        //color.z = glm::clamp((int)(displayColor.z * 255.0f), 0, 255);
+
         // Each thread writes one pixel location in the texture (textel)
         pbo[index].w = 0;
         pbo[index].x = color.x;

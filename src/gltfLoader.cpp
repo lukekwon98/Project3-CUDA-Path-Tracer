@@ -18,6 +18,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <stdexcept>
 #include <utility>
+#include <cmath>
 
 struct MeshInstance {
 	int meshIndex;
@@ -600,6 +601,76 @@ bool loadGltf(const std::string& filename, std::vector<MeshData>& output, std::v
 	return true;
 }
 
+double getEnvironmentLuminance(const EnvironmentData& environment, size_t pixelIndex) {
+	size_t offset = pixelIndex * 4;
+	//numbers convert RGB into a luminance estimat
+	//standard luminance coefficients for linear sRGB primaries (green contributres most, followed by red, blue)
+	double luminance = 0.2126 * environment.pixels[offset] + 0.7152 * environment.pixels[offset + 1] + 0.0722 * environment.pixels[offset + 2];
+	
+	if (!std::isfinite(luminance) || luminance <= 0.0) {
+		return 0.0;
+	}
+
+	return luminance;
+}
+
+//build CDF table for every pixel in the HDR
+//1. calculate each pixel's brightness from RGB values, alpha ignored
+//2. Compute average brightness, then 0.001 x average to scale down to small sampling area
+//3. Calculate the solid angle of each pixel (pixels near the pole cover less area)
+//4. Assigne each pixel this weight
+//5. Store running sums of weights
+//6. Divide every cumulative sum by the final total, covnerting range to [0,1]
+void buildEnvironmentDistribution(EnvironmentData& environment) {
+	int width = environment.width;
+	int height = environment.height;
+	size_t pixelCount = (size_t)width * height;
+
+	double pi = 3.14159265358979323846;
+
+	double luminanceSum = 0.0;
+	for (size_t i = 0; i < pixelCount; i++) {
+		luminanceSum += getEnvironmentLuminance(environment, i);
+	}
+
+	//give dark pixels a small sampling probability, for an entirely black image, use area based sampling
+	double floorLuminance;
+	if (luminanceSum > 0.0) {
+		floorLuminance = 0.001 * luminanceSum / (double)pixelCount;
+	}
+	else {
+		floorLuminance = 1.0;
+	}
+
+	environment.cdf.resize(pixelCount + 1);
+	environment.cdf[0] = 0.0;
+
+	double totalWeight = 0.0;
+
+	for (int y = 0; y < height; y++) {
+		double thetaTop = pi * y / height;
+		double thetaBottom = pi * (y + 1) / height;
+
+		double pixelSolidAngle = (2.0 * pi / width) * (std::cos(thetaTop) - std::cos(thetaBottom));
+
+		for (int x = 0; x < width; x++) {
+			size_t i = size_t(y) * width + x;
+			double weight = (getEnvironmentLuminance(environment, i) + floorLuminance) * pixelSolidAngle;
+
+			totalWeight += weight;
+			environment.cdf[i + 1] = totalWeight;
+		}
+	}
+
+	for (size_t i = 1; i <= pixelCount; i++) {
+		environment.cdf[i] /= totalWeight;
+	}
+
+	environment.cdf.back() = 1.0;
+
+	std::cout << " Built environment CDF: " << pixelCount << " pixels, total weight: " << totalWeight << '\n';
+}
+
 //Parsing using stb_image, exposed by tiny_gltf.h
 bool loadEnvironment(const std::string& filename, EnvironmentData& output) {
 	if (!stbi_is_hdr(filename.c_str())) {
@@ -644,6 +715,7 @@ bool loadEnvironment(const std::string& filename, EnvironmentData& output) {
 	environment.pixels.assign(pixels, pixels + valueCount);
 	stbi_image_free(pixels); //releases allocation after we copy the pixels into our vector
 
+	buildEnvironmentDistribution(environment);
 	output = std::move(environment);
 
 	std::cout << "Loaded environment: " << filename << '\n'

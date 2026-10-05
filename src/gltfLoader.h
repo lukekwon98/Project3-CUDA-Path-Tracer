@@ -12,6 +12,16 @@ struct EnvironmentData {
 
 	//RGBA
 	std::vector<float> pixels;
+	//CDF(cyumulative distirbution function, stores a running total of probabilities
+	// if
+	// A B C
+	// 2 5 3
+	// 0.2 0.5 0.3
+	// [0.0, 0.2) [0.2, 0.7) [0.7, 1.0)
+	// CDF array: 0.0, 0.2, 0.7, 1.0
+	// generate a random number between 0 and one: 0.13 -> pixel A, 0.45 -> pixel B, 0.92 -> pixelC
+	// Pixel i's probability is cdf[i+1] - cdf[i]
+	std::vector<double> cdf;
 };
 
 //image = pixel data

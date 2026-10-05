@@ -205,7 +205,7 @@ void errorCallback(int error, const char* description)
 }
 
 bool init(const std::vector<MeshData>& loadedMeshes, const std::vector<ImageData>& loadedImages, 
-    const std::vector<TextureData>& loadedTextures, const EnvironmentData& envirionment, int lightMaterialId)
+    const std::vector<TextureData>& loadedTextures, const EnvironmentData& environment, int lightMaterialId)
 {
     glfwSetErrorCallback(errorCallback);
 
@@ -412,7 +412,7 @@ int main(int argc, char** argv)
 
     Material lightMaterial = {};
     lightMaterial.color = glm::vec3(1.0f);
-    lightMaterial.emittance = 10.0f;
+    lightMaterial.emittance = 0.0f;
     scene->materials.push_back(lightMaterial);
 
     //Create Instance for ImGUIData

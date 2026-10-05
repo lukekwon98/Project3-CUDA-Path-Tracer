@@ -101,6 +101,10 @@ namespace { // Anonymous namespace makes names private to this .cpp file
 	cudaArray_t dev_environmentArray = nullptr;
 	cudaTextureObject_t environmentTexture = 0;
 
+	double* dev_environmentCdf = nullptr;
+	int environmentWidth = 0;
+	int environmentHeight = 0;
+
 	// Read the generated PTX file into CPU memory
 	std::string loadPtxFile(const char* path) {
 		std::ifstream file(path, std::ios::binary);
@@ -638,6 +642,28 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 	std::cout << "Uploaded HDR environment and created texture object\n";
 
 	//////////////////////////////////
+	// CDF Load for environment map BSDF
+	//////////////////////////////////
+	size_t envPixelCount = static_cast<size_t>(environment.width) * environment.height;
+	if (environment.cdf.size() != envPixelCount + 1) {
+		throw std::runtime_error("Invalid environment CDF size");
+	}
+
+	size_t cdfBytes = environment.cdf.size() * sizeof(double);
+	
+	cudaResult = cudaMalloc(reinterpret_cast<void**>(&dev_environmentCdf), cdfBytes);
+	checkCuda(cudaResult, "Environment CDF allocation failed");
+
+	cudaResult = cudaMemcpy(dev_environmentCdf, environment.cdf.data(), cdfBytes, cudaMemcpyHostToDevice);
+	checkCuda(cudaResult, "Environment CDF upload failed");
+
+	environmentWidth = environment.width;
+	environmentHeight = environment.height;
+
+	std::cout << "Uploaded environment CDF\n";
+
+
+	//////////////////////////////////
 	// Image Load
 	//////////////////////////////////
 	dev_imageArrays.resize(images.size(), nullptr);
@@ -999,8 +1025,15 @@ void launchOptixPaths(
 	launchParams.gasHandle = gasHandle;
 	launchParams.vertices = dev_meshVertices;
 	launchParams.normals = dev_meshNormals;
+	
 	launchParams.texcoords = dev_meshTexcoords;
 	launchParams.textures = dev_textureObjects;
+	
+	launchParams.environmentTexture = environmentTexture;
+	launchParams.environmentCdf = dev_environmentCdf;
+	launchParams.environmentWidth = environmentWidth;
+	launchParams.environmentHeight = environmentHeight;
+
 	launchParams.triangles = dev_meshIndices;
 	launchParams.triangleMaterialIds = dev_triangleMaterialIds;
 
@@ -1100,6 +1133,14 @@ void destroyOptixContext() {
 	// Complete remnant launches before destroying resources
 	cudaError_t syncResult = cudaDeviceSynchronize();
 	checkCuda(syncResult, "Synchronize before OptiX cleanup");
+
+	if (dev_environmentCdf != nullptr) {
+		cudaError_t result = cudaFree(dev_environmentCdf);
+		checkCuda(result, "Environment CDF cleanup failed");
+		dev_environmentCdf = nullptr;
+	}
+	environmentWidth = 0;
+	environmentHeight = 0;
 
 	if (environmentTexture != 0) {
 		cudaError_t result = cudaDestroyTextureObject(environmentTexture);
