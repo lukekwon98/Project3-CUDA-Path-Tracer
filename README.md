@@ -235,10 +235,10 @@ Compared with active-count CUB, fixed-count CUB performs substantially worse for
 |---|---|
 | <img src="https://github.com/user-attachments/assets/77171d03-9835-409a-a178-f7dc240016ff" alt="TestObject2 Suzanne3936" width="360" /> | <img src="https://github.com/user-attachments/assets/e02a7a57-9da3-40c8-9d59-c5864f8c7c77" alt="TestObject5 OccludedBackground" width="360" /> |
 
-| Configuration | Capture |
-|---|---|
-| OptiX intersections — enclosed, no compaction | <img src="https://github.com/user-attachments/assets/3df02eaa-99e3-4ad4-b61d-d1aa8b61155e" alt="OptiX intersections — enclosed, no compaction" width="900" /> |
-| OptiX intersections — enclosed, CUB | <img src="https://github.com/user-attachments/assets/df2bfd90-5aa7-4871-b595-8dcac35381a1" alt="OptiX intersections — enclosed, CUB" width="900" /> |
+| Configuration | Suzanne Open | Suzanne Enclosed |
+|---|:---:|:---:|
+| **OptiX ISect** | <img src="https://github.com/user-attachments/assets/cbc2e081-6160-4053-a626-c988f5fca8b2" alt="Open Suzanne — no compaction" width="600" /> | <img src="https://github.com/user-attachments/assets/3df02eaa-99e3-4ad4-b61d-d1aa8b61155e" alt="Enclosed Suzanne — no compaction" width="600" /> |
+| **OptiX ISect + CUB** | <img src="https://github.com/user-attachments/assets/b1cfd5d3-a423-4512-9e8a-640bef1df6e1" alt="Open Suzanne — CUB compaction" width="600" /> | <img src="https://github.com/user-attachments/assets/df2bfd90-5aa7-4871-b595-8dcac35381a1" alt="Enclosed Suzanne — CUB compaction" width="600" /> |
 
 In the enclosed no-compaction capture, substantial intersection and shading work remains across the bounce sequence. With CUB, substantial work also persists, with partition stages and memory operations repeated between bounces. Unlike the rapidly shrinking tail in the other CUB capture, this sequence suggests that more paths continue bouncing inside the enclosure.
 
@@ -250,13 +250,6 @@ The selected-frame average increases from **8.37 ms (119.52 FPS)** without compa
 | OptiX ISect + CUB | 342 | 91 |
 
 *Average FPS from the controlled benchmark.*
-
-| Configuration | Suzanne Open | Suzanne Enclosed |
-|---|:---:|:---:|
-| **OptiX ISect** | <img src="https://github.com/user-attachments/assets/cbc2e081-6160-4053-a626-c988f5fca8b2" alt="Open Suzanne — no compaction" width="600" /> | <img src="https://github.com/user-attachments/assets/3df02eaa-99e3-4ad4-b61d-d1aa8b61155e" alt="Enclosed Suzanne — no compaction" width="600" /> |
-| **OptiX ISect + CUB** | <img src="https://github.com/user-attachments/assets/b1cfd5d3-a423-4512-9e8a-640bef1df6e1" alt="Open Suzanne — CUB compaction" width="600" /> | <img src="https://github.com/user-attachments/assets/df2bfd90-5aa7-4871-b595-8dcac35381a1" alt="Enclosed Suzanne — CUB compaction" width="600" /> |
-
-*Nsight Systems comparison. The captures use different time scales; compare the labeled durations rather than the displayed bar widths.*
 
 CUB improves throughput by **6.9%** in the open scene but reduces it by **28.9%** in the enclosed scene. Escaping paths in the open scene allow compaction to reduce subsequent work. In the enclosure, more paths continue bouncing, leaving less work to eliminate while partitioning and active-count readback still incur overhead. This agrees with the profiling captures above.
 
