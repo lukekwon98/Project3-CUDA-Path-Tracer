@@ -65,7 +65,7 @@ OptiX setup happens once during initialization. The resulting pipeline, shader b
 
 7. **Populate launch parameters.** Store the GAS handle, GPU buffer pointers, camera data, and rendering settings in the launch-parameter structure, then upload it to the GPU.
 
-8. **Launch rendering.** Call `optixLaunch` with the pipeline, SBT, launch parameters, CUDA stream, and launch dimensions. The raygen program calls `optixTrace` with the GAS handle; traversal then invokes the appropriate closest-hit or miss program.
+8. **Launch rendering.** Call `optixLaunch` with the pipeline, SBT, launch parameters, CUDA stream, and launch dimensions. The raygen program calls `optixTrace` with the GAS handle. Traversal then invokes the appropriate closest-hit or miss program.
 
 ```mermaid
 flowchart TD
@@ -141,7 +141,7 @@ The implementation supports four configurations:
 
 | `USE_PARTITION` | Configuration | Subsequent launches |
 |---|---|---|
-| `0` | No partitioning | Full path count; terminated paths return early. |
+| `0` | No partitioning | Full path count. Terminated paths return early. |
 | `1` | Thrust partition | Active path count returned by `thrust::partition`. |
 | `2` | CUB partition with reusable temporary storage | Active path count copied back to the CPU. |
 
@@ -173,7 +173,7 @@ Introducing a CUDA BVH changes the scale of the workload. The no-compaction capt
 
 Adding CUB to the BVH version averages **5.48 ms (182.33 FPS)** in the selected frames, about **26% more frame time** than BVH alone. The GPU timeline contains additional work, memory operations, and gaps, while the CPU API row repeatedly enters `cudaMemcpy`. Once intersection is much cheaper, partitioning and the dependencies between bounces can outweigh the work saved by removing terminated paths. The controlled Suzanne benchmark shows the same direction, although a smaller difference: **226 FPS without CUB versus 210 FPS with CUB**.
 
-These are selected-frame summaries from profiler captures, not replacements for the controlled benchmark averages. The captures use different horizontal time scales; compare their time labels and reported durations rather than bar widths. Long CPU API calls can include waiting for earlier GPU work. For example, `cudaGLMapBufferObject` spans much of the brute-force frame while intersection kernels run, and long `cudaMemcpy` calls overlap GPU execution in the CUB capture. Their CPU durations should not be interpreted as isolated transfer costs. The kernel/memory percentages shown on the CUDA track are also not SM occupancy or memory-bandwidth measurements.
+Long CPU API calls can include waiting for earlier GPU work. For example, `cudaGLMapBufferObject` spans much of the brute-force frame while intersection kernels run, and long `cudaMemcpy` calls overlap GPU execution in the CUB capture. Their CPU durations should not be interpreted as isolated transfer costs. The kernel/memory percentages shown on the CUDA track are also not SM occupancy or memory-bandwidth measurements.
 
 
 ### OptiX Intersection Queries
@@ -209,7 +209,7 @@ This architecture introduces accelerated triangle intersection while preserving 
 
 Without compaction, the capture shows repeated pairs of OptiX intersection launches and CUDA shading kernels. Later pairs are shorter, but each bounce still requires host scheduling and separate stages. Small memory events and repeated CPU `cudaMemcpy` calls are visible even in the no-compaction capture, so not every transfer in an OptiX timeline can be attributed to path compaction.
 
-The Thrust capture shows substantial time in kernels whose names begin with thrust, followed by further Thrust work. Long `cudaStreamSynchronize` calls and a visible `cudaFree` accompany this sequence. This is evidence that the selected compaction implementation introduces substantial processing and synchronization around an otherwise short intersection/shading stage. The screenshot alone does not identify the purpose of every internal Thrust kernel. The benchmark results establish the overall penalty: for Suzanne, **320 FPS without compaction drops to 132 FPS with Thrust**; Thrust is slower in all four reported scenes.
+The Thrust capture shows substantial time in kernels whose names begin with thrust, followed by further Thrust work. Long `cudaStreamSynchronize` calls and a visible `cudaFree` accompany this sequence. This is evidence that the selected compaction implementation introduces substantial processing and synchronization around an otherwise short intersection/shading stage. The screenshot alone does not identify the purpose of every internal Thrust kernel. The benchmark results establish the overall penalty: for Suzanne, **320 FPS without compaction drops to 132 FPS with Thrust**. Thrust is slower in all four reported scenes.
 
 The CUB capture shows a prominent initial partition stage followed by much smaller later-bounce tasks and memory events. This is consistent with the benefit of processing fewer surviving paths, although the screenshot does not report their counts. In the controlled results, CUB raises Suzanne from **320 to 342 FPS** and FlightHelmet from **295 to 300 FPS**, but lowers Sponza from **99 to 77 FPS**. CUB substantially improves on this Thrust implementation, but compaction is still a scene-dependent tradeoff.
 
@@ -280,7 +280,7 @@ This removes the separate shading launches and per-bounce partitioning passes. I
 
 According to [NVIDIA documentation](https://forums.developer.nvidia.com/t/take-full-advantage-of-cuda-core-and-rt-core/241682), application-defined OptiX programs execute on the GPU’s SMs, while RT cores accelerate acceleration-structure traversal and ray–triangle intersection. Camera-ray generation, random sampling, BSDF evaluation, and path-throughput updates therefore continue to execute on ordinary programmable SM hardware when moved into raygen. Closest-hit and miss programs also execute on SMs. CUDA kernels and OptiX programs also access the same CUDA-allocated GPU buffers through device pointers. 
 
-The Nsight Systems captures show the resulting change in execution structure. Repeated OptiX intersection launches and CUDA shading kernels become one main OptiX interval, followed by CUDA accumulation and display conversion. When camera generation also moves into raygen, its separate CUDA kernel disappears. These traces support the reduction in separately launched stages; they do not expose the division of work between SMs and RT cores within the OptiX interval.
+The Nsight Systems captures show the resulting change in execution structure. Repeated OptiX intersection launches and CUDA shading kernels become one main OptiX interval, followed by CUDA accumulation and display conversion. When camera generation also moves into raygen, its separate CUDA kernel disappears. These traces support the reduction in separately launched stages. They do not expose the division of work between SMs and RT cores within the OptiX interval.
 
 #### Profiling the Raygen Bounce Loop
 
@@ -323,7 +323,7 @@ Gaps remain around the short GPU sequence. Once tracing is this fast, host execu
 
 Removing forced inlining has little effect on measured throughput: FPS decreases by **1.9% for Box**, remains unchanged for **Suzanne**, and decreases by **0.4% for FlightHelmet** and **1.2% for Sponza**. Without repeated measurements and variability estimates, these small differences do not establish a consistent performance benefit.
 
-Both profiling captures retain the same main GPU sequence: OptiX path tracing, final gather, and display conversion. Removing `__forceinline__` allows the compiler to make its own inlining decisions; it does not guarantee that these functions remain uninlined.
+Both profiling captures retain the same main GPU sequence: OptiX path tracing, final gather, and display conversion. Removing `__forceinline__` allows the compiler to make its own inlining decisions, as it does not guarantee that these functions remain uninlined.
 
 ### Shared Benchmark Configuration
 
@@ -471,7 +471,7 @@ The benchmark mesh renders are shown in the performance results above.
 | :---: | :---: | :---: |
 | <img src="https://github.com/user-attachments/assets/e27e00d8-9869-4a39-9d99-0227dd082011" alt="Base-color texture applied" width="360" /> | <img src="https://github.com/user-attachments/assets/4da282d2-7856-4a8b-b0ac-6037eaf65571" alt="Diagnostic metallic–roughness map applied" width="360" /> | <img src="https://github.com/user-attachments/assets/36eb52eb-9690-4619-814b-f2e5253790e4" alt="Diagnostic normal map applied" width="360" /> |
 
-Material images are decoded into unsigned 8-bit RGBA data and uploaded to CUDA arrays. CUDA texture objects provide linear filtering and the configured wrapping behavior. Base-color textures receive sRGB decoding, while metallic–roughness and normal maps are sampled as linear numerical data. All three use interpolated `TEXCOORD_0` coordinates; texture transforms and additional UV sets are outside the current implementation’s scope.
+Material images are decoded into unsigned 8-bit RGBA data and uploaded to CUDA arrays. CUDA texture objects provide linear filtering and the configured wrapping behavior. Base-color textures receive sRGB decoding, while metallic–roughness and normal maps are sampled as linear numerical data. All three use interpolated `TEXCOORD_0` coordinates. Texture transforms and additional UV sets are outside the current implementation’s scope.
 
 **Base-color mapping** multiplies the sampled texture color by the material’s base-color factor, allowing surface color to vary across a mesh.
 
@@ -479,7 +479,7 @@ Material images are decoded into unsigned 8-bit RGBA data and uploaded to CUDA a
 
 **Normal mapping** perturbs the shading normal using a tangent-space direction decoded from the texture. The decoded X and Y components are scaled by the material’s normal-map strength before normalization.
 
-The tangent frame uses interpolated glTF tangents when available; otherwise, it is derived from triangle edges and UV differences. The tangent is orthogonalized against the interpolated normal, and its handedness determines the bitangent orientation. The mapped normal is accepted only when it faces both the appropriate geometric hemisphere and the viewing direction. Degenerate tangent frames retain the original shading normal. Normal mapping applies to metallic–roughness materials, while glass continues to use the geometric normal.
+The tangent frame uses interpolated glTF tangents when available. Otherwise, it is derived from triangle edges and UV differences. The tangent is orthogonalized against the interpolated normal, and its handedness determines the bitangent orientation. The mapped normal is accepted only when it faces both the appropriate geometric hemisphere and the viewing direction. Degenerate tangent frames retain the original shading normal. Normal mapping applies to metallic–roughness materials, while glass continues to use the geometric normal.
 
 Together, these maps independently control surface color, material response, and shading detail:
 
@@ -512,13 +512,17 @@ The renderer stores the previous BSDF PDF so that an escaping BSDF-sampled ray r
 
 ### Depth of Field
 
+| No DOF | DOF |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/9b3ce840-2d83-4ab5-948b-c7c038f368a6" alt="1" width="360" /> | <img src="https://github.com/user-attachments/assets/4c291d1b-6c14-4230-a87c-b7dd20ddd155" alt="cornell 50000samp" width="360" /> |
+
 The OptiX camera implements a thin-lens model. A jittered pinhole ray first determines a point on the focal plane. The ray origin is then sampled uniformly over a circular aperture, and its direction is adjusted toward that focal point.
 
 The camera exposes two JSON parameters:
 
 | Parameter | Effect |
 |---|---|
-| `APERTURE_RADIUS` | Controls the aperture size; zero produces a pinhole camera. |
+| `APERTURE_RADIUS` | Controls the aperture size. Zero produces a pinhole camera. |
 | `FOCAL_DISTANCE` | Sets the focal plane’s distance along the camera’s forward direction. |
 
 Depth of field is available when camera rays are generated inside OptiX raygen.
@@ -536,7 +540,7 @@ The result is converted to 8-bit color and written directly to the OpenGL pixel 
 | :---: | :---: |
 | <img src="https://github.com/user-attachments/assets/3435923e-93de-416d-91fa-82be2120388b" alt="Without Reinhard and gamma correction" width="420" /> | <img src="https://github.com/user-attachments/assets/19f1a6e8-e5f8-477c-8004-b60cdb501649" alt="With Reinhard and gamma correction" width="420" /> |
 
-Without the display conversion, the vegetation and much of the helmet appear very dark, while the brightest reflections become nearly solid white. With Reinhard tone mapping and gamma correction, shadow and midtone detail is more visible and the bright reflections retain more visible variation. Reinhard compresses high radiance values, while gamma correction changes their display encoding; this pair demonstrates their combined effect rather than isolating either operation.
+Without the display conversion, the overall scene appears very dark, while the brightest reflections become nearly solid white. With Reinhard tone mapping and gamma correction, shadow and midtone detail is more visible and the bright reflections retain more visible variation. Reinhard compresses high radiance values, while gamma correction changes their display encoding. This pair demonstrates their combined effect rather than isolating either operation.
 
 ## Build and Usage
 
@@ -552,7 +556,7 @@ set(OPTIX_ROOT "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1.0")
 
 The selected directory should contain include/optix.h. Reconfigure CMake after changing the path.
 
-The CUDA Toolkit must also be installed separately; it is used to compile the renderer and generate the PTX loaded by OptiX.
+The CUDA Toolkit must also be installed separately. It is used to compile the renderer and generate the PTX loaded by OptiX.
 
 
 ### Build Configuration
