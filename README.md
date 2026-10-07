@@ -369,7 +369,7 @@ Average FPS under the shared benchmark configuration above. Column headings list
 
 | FlightHelmet — 94,722 triangles | Sponza — 262,267 triangles |
 | :---: | :---: |
-| <img src="https://github.com/user-attachments/assets/c3f66374-f247-4b0b-8601-b30db7042e9a" alt="TestObject3 FlightHelmet94722" width="360" /> | <img src="https://github.com/user-attachments/assets/34f7b529-89e4-4e50-808f-4b02bb25e5a2" alt="TestObject4 Sponza262267" width="360" /> |
+| <img src="https://github.com/user-attachments/assets/c3f66374-f247-4b0b-8601-b30db7042e9a" alt="TestObject3 FlightHelmet94722" width="360" /> | <img src="https://github.com/user-attachments/assets/34f7b529-89e4-4e50-808f-4b02bb25e5a2" alt="TestObject4 Sponza262267" width="720" /> |
 The fastest measured configuration is **OptiX Loop + Cam** in all four scenes. Relative to CUDA BVH without compaction, it is **2.61× faster for Box**, **4.25× for Suzanne**, **6.57× for FlightHelmet**, and **15.64× for Sponza**. These ratios use the controlled FPS table, rather than selected profiler frames. The profiling captures above explain the architectural progression: accelerate intersection first, then reduce the repeated scheduling and staging work around it.
 
 ## Visual Features
