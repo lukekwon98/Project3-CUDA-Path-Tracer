@@ -278,6 +278,8 @@ Average FPS under the shared benchmark configuration above. Column headings list
 
 **CUDA BVH comparison:** I did not write the CUDA BVH and Möller-Trumbore intersection implementation. They were generated using Chat GPT under the permission of professor Schwartz, and used only as a performance baseline for comparison with my OptiX implementation. Therefore they were not included in my commits, and are not listed as supported features of this project.
 
+<img width="600" height="371" alt="chart" src="https://github.com/user-attachments/assets/3939e557-cb1a-4eb8-a842-cb5c3a16659c" />
+
 | **Implementation** | **Box: 12** | **Suzanne: 3,936** | **FlightHelmet: 94,722** | **Sponza: 262,267** |
 | :---: | ---: | ---: | ---: | ---: |
 | **CUDA Brute** | 420 | 15 | 0.7 | 0 |
