@@ -217,6 +217,22 @@ The Thrust capture shows substantial time in kernels whose names begin with `thr
 
 The CUB capture shows a prominent initial partition stage followed by much smaller later-bounce tasks and memory events. This is consistent with the benefit of processing fewer surviving paths, although the screenshot does not report their counts. In the controlled results, CUB raises Suzanne from **320 to 342 FPS** and FlightHelmet from **295 to 300 FPS**, but lowers Sponza from **99 to 77 FPS**. CUB substantially improves on this Thrust implementation, but compaction is still a scene-dependent tradeoff.
 
+#### Extra: Fixed-Count CUB Compaction
+
+The fixed-count CUB mode retains full-size launches and a fixed number of bounce iterations, avoiding the active-count readback while still grouping active paths.
+
+| Implementation | Box | Suzanne | FlightHelmet | Sponza |
+|---|---:|---:|---:|---:|
+| OptiX ISect | 350 | 320 | 295 | 99 |
+| OptiX ISect + CUB | 390 | 342 | 300 | 77 |
+| OptiX ISect + Fixed CUB | 156 | 150 | 147 | 78 |
+
+*Average FPS; higher is better.*
+
+Fixed-count CUB is slower than no compaction in every tested scene. Although it avoids reading the active count back to the CPU, it still pays for partitioning and launches subsequent kernels over the full path count. Grouping surviving paths alone does not recover these costs in these tests.
+
+Compared with active-count CUB, fixed-count CUB performs substantially worse for Box, Suzanne, and FlightHelmet. Sponza is nearly unchanged at 78 versus 77 FPS.
+
 #### Enclosed Scene: Compaction Has Less Work to Remove
 
 | Configuration | Capture |
@@ -227,6 +243,15 @@ The CUB capture shows a prominent initial partition stage followed by much small
 In the enclosed no-compaction capture, substantial intersection and shading work remains across the bounce sequence. With CUB, substantial work also persists, with partition stages and memory operations repeated between bounces. Unlike the rapidly shrinking tail in the other CUB capture, this sequence suggests that more paths continue bouncing inside the enclosure.
 
 The selected-frame average increases from **8.37 ms (119.52 FPS)** without compaction to **12.11 ms (82.56 FPS)** with CUB: about **45% more frame time**, or **31% lower FPS**. This supports the expected limitation of compaction in a closed scene: paying to partition paths is less useful when many paths survive. Actual per-bounce active counts would be needed to quantify that explanation.
+
+| Implementation | Suzanne Open | Suzanne Enclosed |
+|---|---:|---:|
+| OptiX ISect | 320 | 128 |
+| OptiX ISect + CUB | 342 | 91 |
+
+*Average FPS from the controlled benchmark.*
+
+CUB improves throughput by **6.9%** in the open scene but reduces it by **28.9%** in the enclosed scene. Escaping paths in the open scene allow compaction to reduce subsequent work. In the enclosure, more paths continue bouncing, leaving less work to eliminate while partitioning and active-count readback still incur overhead. This agrees with the profiling captures above.
 
 
 ### Moving the Bounce Loop into OptiX Raygen
@@ -281,10 +306,20 @@ The `USE_RAYGEN_CAMERA` toggle preserves the separate-camera version for compari
 
 With camera generation included, the separate camera kernel disappears. The visible main GPU sequence becomes **OptiX path tracing → final gather → display conversion**. The selected-frame average is **1.13 ms (884.20 FPS)**, compared with **1.73 ms** in the separate-camera capture. The controlled Suzanne benchmark similarly improves from **680 to 960 FPS**, a **41% increase**.
 
-The second capture's active tab explicitly identifies **“no forced inline”**, so it is labeled separately here. It preserves the same three-stage GPU structure and reports **1.24 ms (806.28 FPS)**. Although its selected CPU-frame average is higher, the annotated OptiX NVTX ranges are nearly identical: **374.034 µs** in the first capture and **371.570 µs** without forced inline. These NVTX annotations are not a substitute for isolated GPU-kernel timing. The small selections do not establish that forced inlining speeds up the tracing kernel; repeated controlled measurements and kernel-level profiling would be needed to assess it.
-
 Gaps remain around the short GPU sequence. Once tracing is this fast, host execution, presentation, and scheduling are plausible contributors to total frame time, but these screenshots do not isolate their individual costs.
 
+#### Extra: Forced Inlining
+
+| Implementation | Box | Suzanne | FlightHelmet | Sponza |
+|---|---:|---:|---:|---:|
+| OptiX Loop + Cam | 1070 | 960 | 723 | 172 |
+| OptiX Loop + Cam — No Forced Inline | 1050 | 960 | 720 | 170 |
+
+*Average FPS; higher is better.*
+
+Removing forced inlining has little effect on measured throughput: FPS decreases by **1.9% for Box**, remains unchanged for **Suzanne**, and decreases by **0.4% for FlightHelmet** and **1.2% for Sponza**. Without repeated measurements and variability estimates, these small differences do not establish a consistent performance benefit.
+
+Both profiling captures retain the same main GPU sequence: OptiX path tracing, final gather, and display conversion. Removing `__forceinline__` allows the compiler to make its own inlining decisions; it does not guarantee that these functions remain uninlined.
 
 ### Shared Benchmark Configuration
 
