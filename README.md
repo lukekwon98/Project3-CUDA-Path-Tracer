@@ -15,10 +15,6 @@ The project explores how rendering architecture affects performance: starting wi
 
 <img src="https://github.com/user-attachments/assets/6b081d53-71d7-45c5-96e4-296da682ee11" alt="5" width="900" />
 
-<img src="https://github.com/user-attachments/assets/4c291d1b-6c14-4230-a87c-b7dd20ddd155" alt="cornell 50000samp" width="900" />
-
-*50,000-sample render.*
-
 ### Render Gallery
 
 | Render 1 | Render 2 |
