@@ -1,0 +1,11 @@
+Model Information:
+* title:	Spheal Pokemon
+* source:	https://sketchfab.com/3d-models/spheal-pokemon-05815c4e8d714690bbb615588585d941
+* author:	Stopapypa (https://sketchfab.com/Stopapypa)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Spheal Pokemon" (https://sketchfab.com/3d-models/spheal-pokemon-05815c4e8d714690bbb615588585d941) by Stopapypa (https://sketchfab.com/Stopapypa) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

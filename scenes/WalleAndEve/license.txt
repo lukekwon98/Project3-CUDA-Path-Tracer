@@ -1,0 +1,11 @@
+Model Information:
+* title:	Wall-E and Eve
+* source:	https://sketchfab.com/3d-models/wall-e-and-eve-a41f75a4af0142c680e1a26e904e5bec
+* author:	dark_igorek (https://sketchfab.com/dark_igorek)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Wall-E and Eve" (https://sketchfab.com/3d-models/wall-e-and-eve-a41f75a4af0142c680e1a26e904e5bec) by dark_igorek (https://sketchfab.com/dark_igorek) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

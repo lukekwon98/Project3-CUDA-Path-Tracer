@@ -354,7 +354,7 @@ int main(int argc, char** argv)
     std::vector<TextureData> loadedTextures;
 
     // loadGltf into loadedMeshes and loadedImages
-    bool loaded = loadGltf("../scenes/Box/Box_texturetest.gltf", loadedMeshes, loadedImages, loadedTextures);
+    bool loaded = loadGltf("../scenes/TabletopFinal/tabletop16.gltf", loadedMeshes, loadedImages, loadedTextures);
     if (loaded == false) {
         return EXIT_FAILURE;
     }
@@ -407,6 +407,13 @@ int main(int argc, char** argv)
         material.metallicRoughnessTextureId = mesh.gltfMetallicRoughnessTextureIndex;
         material.normalTextureId = mesh.gltfNormalTextureIndex;
         material.normalScale = mesh.normalScale;
+
+        if (mesh.gltfMaterialIndex >= 47 && mesh.gltfMaterialIndex <= 50) {
+            material.hasRefractive = 1.0f;
+            material.hasReflective = 0.0f;
+            material.indexOfRefraction = 1.5f;
+            material.useMetallicRoughness = 0;
+        }
 
         scene->materials.push_back(material);
     }

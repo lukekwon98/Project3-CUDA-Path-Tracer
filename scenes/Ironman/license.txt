@@ -1,0 +1,11 @@
+Model Information:
+* title:	Iron-Man Mark 85 | Rigged
+* source:	https://sketchfab.com/3d-models/iron-man-mark-85-rigged-dde1085c464d4f8da259fe6669ae4dd2
+* author:	9A Films / Nihar Arora (https://sketchfab.com/Nihar-9Afilms)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Iron-Man Mark 85 | Rigged" (https://sketchfab.com/3d-models/iron-man-mark-85-rigged-dde1085c464d4f8da259fe6669ae4dd2) by 9A Films / Nihar Arora (https://sketchfab.com/Nihar-9Afilms) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

@@ -1,0 +1,11 @@
+Model Information:
+* title:	Jigglypuff - Low Poly 3D Pokémon
+* source:	https://sketchfab.com/3d-models/jigglypuff-low-poly-3d-pokemon-eced566ba2224be58a35752949d4a354
+* author:	cenzo (https://sketchfab.com/cenzo_salva)
+
+Model License:
+* license type:	CC-BY-NC-4.0 (http://creativecommons.org/licenses/by-nc/4.0/)
+* requirements:	Author must be credited. No commercial use.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Jigglypuff - Low Poly 3D Pokémon" (https://sketchfab.com/3d-models/jigglypuff-low-poly-3d-pokemon-eced566ba2224be58a35752949d4a354) by cenzo (https://sketchfab.com/cenzo_salva) licensed under CC-BY-NC-4.0 (http://creativecommons.org/licenses/by-nc/4.0/)

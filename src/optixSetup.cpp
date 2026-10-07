@@ -832,10 +832,11 @@ void initOptixContext(const std::vector<MeshData>& meshes, const std::vector<Ima
 
 	// light above box
 	const unsigned int lightVertexStart = static_cast<unsigned int>(vertices.size());
-	vertices.push_back(make_float3(-2.0f, 3.0f, 1.0f));
-	vertices.push_back(make_float3(2.0f, 3.0f, 1.0f));
-	vertices.push_back(make_float3(2.0f, 3.0f, 5.0f));
-	vertices.push_back(make_float3(-2.0f, 3.0f, 5.0f));
+	const float lightHeight = 8.0f;
+	vertices.push_back(make_float3(-2.0f, lightHeight, 1.0f));
+	vertices.push_back(make_float3(2.0f, lightHeight, 1.0f));
+	vertices.push_back(make_float3(2.0f, lightHeight, 5.0f));
+	vertices.push_back(make_float3(-2.0f, lightHeight, 5.0f));
 
 	// fallback for the 0s will be implemeneted in closest-hit
 	for (int v = 0; v < 4; ++v) {
