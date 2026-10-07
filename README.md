@@ -423,19 +423,19 @@ The top left is **metallic = 1, roughness = 0**, and the bottom right is **metal
 
 | Roughness: 0 | Roughness: 0 |
 | :---: | :---: |
-| <img src="https://github.com/user-attachments/assets/4b088eed-bc23-4c6e-a3d3-9fcbe821778d" alt="Roughness0" width="360" /> | <img src="https://github.com/user-attachments/assets/a45110fd-82f4-4a7f-83b0-68b563afeec6" alt="Roughness0F" width="360" /> |
+| <img src="https://github.com/user-attachments/assets/a45110fd-82f4-4a7f-83b0-68b563afeec6" alt="Roughness0" width="360" /> | <img src="https://github.com/user-attachments/assets/4b088eed-bc23-4c6e-a3d3-9fcbe821778d" alt="Roughness0F" width="360" /> |
 
 | Roughness: 0.2 | Roughness: 0.2 |
 | :---: | :---: |
-| <img src="https://github.com/user-attachments/assets/b1ff3d82-a87a-4da0-a87c-9b1f5e6de6dc" alt="RoughnessP2" width="360" /> | <img src="https://github.com/user-attachments/assets/d84a16ef-6f20-4d32-b7ae-543cf14ec54d" alt="RoughnessP2F" width="360" /> |
+| <img src="https://github.com/user-attachments/assets/d84a16ef-6f20-4d32-b7ae-543cf14ec54d" alt="RoughnessP2" width="360" /> | <img src="https://github.com/user-attachments/assets/b1ff3d82-a87a-4da0-a87c-9b1f5e6de6dc" alt="RoughnessP2F" width="360" /> |
 
 | Roughness: 0.5 | Roughness:0.5 |
 | :---: | :---: |
-| <img src="https://github.com/user-attachments/assets/8e820d09-2ef3-4ecb-a8a8-ea9228ff5dcf" alt="RoughnessH" width="360" /> | <img src="https://github.com/user-attachments/assets/b6c4d600-f27a-4581-a4f5-693d5f85480b" alt="RoughnessHF" width="360" /> |
+| <img src="https://github.com/user-attachments/assets/b6c4d600-f27a-4581-a4f5-693d5f85480b" alt="RoughnessH" width="360" /> | <img src="https://github.com/user-attachments/assets/8e820d09-2ef3-4ecb-a8a8-ea9228ff5dcf" alt="RoughnessHF" width="360" /> |
 
 | Roughness: 1 | Roughness: 1 |
 | :---: | :---: |
-| <img src="https://github.com/user-attachments/assets/289351dd-12e5-47a9-9888-5d6efa31b95e" alt="Roughness1" width="360" /> | <img src="https://github.com/user-attachments/assets/de16eb16-8c9e-4c5c-9518-f79e0bdda7f4" alt="Roughness1F" width="360" /> |
+| <img src="https://github.com/user-attachments/assets/de16eb16-8c9e-4c5c-9518-f79e0bdda7f4" alt="Roughness1" width="360" /> | <img src="https://github.com/user-attachments/assets/289351dd-12e5-47a9-9888-5d6efa31b95e" alt="Roughness1F" width="360" /> |
 
 Rough reflective surfaces use the GGX / Trowbridge–Reitz microfacet distribution, a masking-shadowing term, and a Fresnel term. Sampled directions update path throughput using the BSDF value, surface cosine, and sampling probability density.
 
