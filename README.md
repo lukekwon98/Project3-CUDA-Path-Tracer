@@ -33,6 +33,22 @@ CUDA Path Tracer
   - Reinhard + Gamma
  - Mention cmakeslists changes as mentioned in instructions
 
+<img width="791" height="816" alt="ReinhardGammaX" src="https://github.com/user-attachments/assets/3435923e-93de-416d-91fa-82be2120388b" />
+<img width="780" height="802" alt="ReinhardGamma" src="https://github.com/user-attachments/assets/19f1a6e8-e5f8-477c-8004-b60cdb501649" />
+<img width="1961" height="675" alt="Pure CUDA + no compaction" src="https://github.com/user-attachments/assets/2bf9c658-5221-44aa-bf48-49ec5645594d" />
+<img width="1953" height="717" alt="Pure CUDA + BVH" src="https://github.com/user-attachments/assets/1c726837-9c6b-4b50-8b94-2cfd9e211447" />
+<img width="1966" height="670" alt="Pure CUDA + BVH + CUB Compaction" src="https://github.com/user-attachments/assets/9f1b7dc5-f3ac-40ad-98d4-d719ed430ec2" />
+<img width="1965" height="740" alt="Optix Intersection + no compaction enclosed" src="https://github.com/user-attachments/assets/3df02eaa-99e3-4ad4-b61d-d1aa8b61155e" />
+<img width="1968" height="672" alt="Optix Intersection + CUB compaction" src="https://github.com/user-attachments/assets/b1cfd5d3-a423-4512-9e8a-640bef1df6e1" />
+<img width="1960" height="768" alt="Optix Intersection + CUB compaction enclosed scene" src="https://github.com/user-attachments/assets/df2bfd90-5aa7-4871-b595-8dcac35381a1" />
+<img width="1967" height="791" alt="Optix bounce loop" src="https://github.com/user-attachments/assets/bd769251-14db-4994-9b55-1531d0656da9" />
+<img width="1961" height="692" alt="Optix bounce loop + ray gen from camera" src="https://github.com/user-attachments/assets/b62510f3-566d-4cca-8ef2-f16081fde46d" />
+<img width="1965" height="670" alt="Optix + Thurst compaction" src="https://github.com/user-attachments/assets/8dc1836b-47a3-4030-8904-282cb9fbd4cc" />
+<img width="1968" height="690" alt="Optix + no compaction" src="https://github.com/user-attachments/assets/cbc2e081-6160-4053-a626-c988f5fca8b2" />
+<img width="1977" height="760" alt="Optix + bounce + ray gen from camera" src="https://github.com/user-attachments/assets/eb7fa38e-43b1-410c-97c3-5bc08483f515" />
+<img width="1960" height="731" alt="CUDA + CUB compaction" src="https://github.com/user-attachments/assets/09412aa1-b10d-4e89-9701-df34e60cf843" />
+
+
 <img width="800" height="800" alt="Reflective2" src="https://github.com/user-attachments/assets/65ed8a8e-f0e7-4b46-8354-657deec5012c" />
 <img width="800" height="800" alt="Reflective1" src="https://github.com/user-attachments/assets/d560495f-a8d7-4db4-86e4-30f6ff0ced62" />
 <img width="800" height="800" alt="Reflective" src="https://github.com/user-attachments/assets/5aeab3fe-8a2f-4fd4-b424-8e7e98f33d5c" />
