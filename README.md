@@ -249,8 +249,6 @@ The selected-frame average increases from **8.37 ms (119.52 FPS)** without compa
 | OptiX ISect | 320 | 128 |
 | OptiX ISect + CUB | 342 | 91 |
 
-*Average FPS from the controlled benchmark.*
-
 CUB improves throughput by **6.9%** in the open scene but reduces it by **28.9%** in the enclosed scene. Escaping paths in the open scene allow compaction to reduce subsequent work. In the enclosure, more paths continue bouncing, leaving less work to eliminate while partitioning and active-count readback still incur overhead. This agrees with the profiling captures above.
 
 
