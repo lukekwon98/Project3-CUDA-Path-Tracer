@@ -223,7 +223,7 @@ The fixed-count CUB mode retains full-size launches and a fixed number of bounce
 | OptiX ISect + CUB | 390 | 342 | 300 | 77 |
 | OptiX ISect + Fixed CUB | 156 | 150 | 147 | 78 |
 
-*Average FPS; higher is better.*
+*FPS*
 
 Fixed-count CUB is slower than no compaction in every tested scene. Although it avoids reading the active count back to the CPU, it still pays for partitioning and launches subsequent kernels over the full path count. Grouping surviving paths alone does not recover these costs in these tests.
 
