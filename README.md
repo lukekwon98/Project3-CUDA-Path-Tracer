@@ -274,7 +274,7 @@ a fully closed diffuse box surrounding both Suzanne and the emitter.
 
 Average FPS under the shared benchmark configuration above. Column headings list mesh triangle counts.
 
-**CUDA BVH comparison:** I did not write the CUDA BVH and Möller-Trumbore intersection implementation. They were generated using Chat GPT under the permission of professor Schwartz, and used only as a performance baseline for comparison with my OptiX implementation. Therefore they were not included in my commits, and are not listed as supported features of this project.
+**CUDA BVH comparison:** I did not write the CUDA BVH and Möller-Trumbore intersection implementations. They were generated using Chat GPT under the permission of professor Schwartz, and used only as a performance baseline for comparison with my OptiX implementation. Therefore they were not included in my commits, and are not listed as supported features of this project.
 
 <img width="600" height="371" alt="chart" src="https://github.com/user-attachments/assets/3939e557-cb1a-4eb8-a842-cb5c3a16659c" />
 
