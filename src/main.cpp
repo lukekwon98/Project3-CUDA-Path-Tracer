@@ -354,7 +354,7 @@ int main(int argc, char** argv)
     std::vector<TextureData> loadedTextures;
 
     // loadGltf into loadedMeshes and loadedImages
-    bool loaded = loadGltf("../scenes/DamagedHelmet/DamagedHelmet.gltf", loadedMeshes, loadedImages, loadedTextures);
+    bool loaded = loadGltf("../scenes/Box/Box_texturetest.gltf", loadedMeshes, loadedImages, loadedTextures);
     if (loaded == false) {
         return EXIT_FAILURE;
     }
@@ -405,6 +405,8 @@ int main(int argc, char** argv)
         material.useMetallicRoughness = 1;
         material.metallic = mesh.metallicFactor;
         material.metallicRoughnessTextureId = mesh.gltfMetallicRoughnessTextureIndex;
+        material.normalTextureId = mesh.gltfNormalTextureIndex;
+        material.normalScale = mesh.normalScale;
 
         scene->materials.push_back(material);
     }
@@ -413,7 +415,7 @@ int main(int argc, char** argv)
 
     Material lightMaterial = {};
     lightMaterial.color = glm::vec3(1.0f);
-    lightMaterial.emittance = 0.0f;
+    lightMaterial.emittance = 5.0f;
     scene->materials.push_back(lightMaterial);
 
     //Create Instance for ImGUIData

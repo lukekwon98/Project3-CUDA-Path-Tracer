@@ -14,7 +14,7 @@
     "nodes": [
         {
             "children": [
-                1, 2
+                1
             ],
             "matrix": [
                 1.0,
@@ -36,13 +36,7 @@
             ]
         },
         {
-            "mesh": 0,
-            "translation": [-0.75, 0.0, 0.0]
-        },
-        {
-            "mesh": 0,
-            "translation": [0.75, 0.0, 0.0],
-            "scale": [0.6, 0.6, 0.6]
+            "mesh": 0
         }
     ],
     "meshes": [
