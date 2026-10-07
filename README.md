@@ -1,4 +1,4 @@
-CUDA Path Tracer
+OptiX/CUDA Path Tracer
 ================
 
 **University of Pennsylvania, CIS 565: GPU Programming and Architecture, Project 3**
@@ -19,7 +19,7 @@ CUDA Path Tracer
   - Optix kernel only for intersection + Nsight Systems
   - Optix kernel for intersection + shading + Nsight Systems
   - Optix kernel for raygen + intersection + Nsight Systems
-  - __forceinline__ comparison (uber kernel & branching) - if I have time
+  - __forceinline__ comparison (uber kernel & branching)
 - Visual Features
   - Jitter anti-aliasing
   - Refraction, Fresnel, Reflection
@@ -31,62 +31,564 @@ CUDA Path Tracer
   - Normal Map
   - DOF
   - Reinhard + Gamma
- - Mention cmakeslists changes as mentioned in instructions
 
-<img width="791" height="816" alt="ReinhardGammaX" src="https://github.com/user-attachments/assets/3435923e-93de-416d-91fa-82be2120388b" />
-<img width="780" height="802" alt="ReinhardGamma" src="https://github.com/user-attachments/assets/19f1a6e8-e5f8-477c-8004-b60cdb501649" />
-<img width="1961" height="675" alt="Pure CUDA + no compaction" src="https://github.com/user-attachments/assets/2bf9c658-5221-44aa-bf48-49ec5645594d" />
-<img width="1953" height="717" alt="Pure CUDA + BVH" src="https://github.com/user-attachments/assets/1c726837-9c6b-4b50-8b94-2cfd9e211447" />
-<img width="1966" height="670" alt="Pure CUDA + BVH + CUB Compaction" src="https://github.com/user-attachments/assets/9f1b7dc5-f3ac-40ad-98d4-d719ed430ec2" />
-<img width="1965" height="740" alt="Optix Intersection + no compaction enclosed" src="https://github.com/user-attachments/assets/3df02eaa-99e3-4ad4-b61d-d1aa8b61155e" />
-<img width="1968" height="672" alt="Optix Intersection + CUB compaction" src="https://github.com/user-attachments/assets/b1cfd5d3-a423-4512-9e8a-640bef1df6e1" />
-<img width="1960" height="768" alt="Optix Intersection + CUB compaction enclosed scene" src="https://github.com/user-attachments/assets/df2bfd90-5aa7-4871-b595-8dcac35381a1" />
-<img width="1967" height="791" alt="Optix bounce loop" src="https://github.com/user-attachments/assets/bd769251-14db-4994-9b55-1531d0656da9" />
-<img width="1961" height="692" alt="Optix bounce loop + ray gen from camera" src="https://github.com/user-attachments/assets/b62510f3-566d-4cca-8ef2-f16081fde46d" />
-<img width="1965" height="670" alt="Optix + Thurst compaction" src="https://github.com/user-attachments/assets/8dc1836b-47a3-4030-8904-282cb9fbd4cc" />
-<img width="1968" height="690" alt="Optix + no compaction" src="https://github.com/user-attachments/assets/cbc2e081-6160-4053-a626-c988f5fca8b2" />
-<img width="1977" height="760" alt="Optix + bounce + ray gen from camera" src="https://github.com/user-attachments/assets/eb7fa38e-43b1-410c-97c3-5bc08483f515" />
-<img width="1960" height="731" alt="CUDA + CUB compaction" src="https://github.com/user-attachments/assets/09412aa1-b10d-4e89-9701-df34e60cf843" />
+## Overview
+
+A GPU path tracer built with CUDA and NVIDIA OptiX, supporting glTF meshes, physically based materials, texture and normal mapping, HDR environment lighting with multiple importance sampling, and depth of field.
+
+The project explores how rendering architecture affects performance: starting with separate CUDA kernels for camera generation, intersection, and shading, then introducing OptiX intersections, moving the bounce loop into raygen, and finally generating camera rays within the same program. The earlier execution paths remain available for comparison.
+
+<img src="https://github.com/user-attachments/assets/4c291d1b-6c14-4230-a87c-b7dd20ddd155" alt="cornell 50000samp" width="900" />
+
+*50,000-sample render.*
+
+### Render Gallery
+
+| Render 1 | Render 2 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/9b3ce840-2d83-4ab5-948b-c7c038f368a6" alt="1" width="360" /> | <img src="https://github.com/user-attachments/assets/7f69a0ba-f6ef-45e6-8ffa-d7ec2b07e257" alt="NotFinal" width="360" /> |
+
+| Render 3 | Render 4 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/9e88f119-b532-464f-91b4-1011f2da8805" alt="3" width="360" /> | <img src="https://github.com/user-attachments/assets/ad3da490-d793-4595-acb9-d72624c7ecaf" alt="4" width="360" /> |
+
+| Render 5 | Render 6 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/6b081d53-71d7-45c5-96e4-296da682ee11" alt="5" width="360" /> | <img src="https://github.com/user-attachments/assets/52349970-5202-43f4-8761-e4c857d4fcfb" alt="6" width="360" /> |
+
+| Render 7 | Render 8 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/66a21fa1-66bb-477f-b683-75c02681bcb7" alt="2" width="360" /> | <img src="https://github.com/user-attachments/assets/4c291d1b-6c14-4230-a87c-b7dd20ddd155" alt="cornell 50000samp" width="360" /> |
+
+## OptiX Integration
+
+The renderer uses OptiX to build a geometry acceleration structure (GAS) over the scene’s triangles and trace rays against it. The integration consists of the following components:
+
+| Component | Role in this renderer |
+|---|---|
+| Device context | Associates OptiX with the CUDA context used by the renderer. |
+| PTX module | Loads the GPU programs compiled from `optixPrograms.cu`. |
+| Program groups | Select the raygen, closest-hit, and miss entry points. |
+| Pipeline | Links those program groups and configures their stack requirements. |
+| Shader binding table (SBT) | Identifies the programs used for ray generation, hits, and misses. |
+| Geometry acceleration structure (GAS) | Accelerates intersection queries over the uploaded triangle mesh. |
+| Launch parameters | Provide GPU programs with the scene buffers, camera, materials, textures, and rendering settings. |
+
+### Geometry and intersection data
+
+The glTF loader applies scene-node transforms to mesh data before uploading it. Meshes are combined into a single triangle GAS, with per-triangle material IDs linking geometry to shading data.
+
+The closest-hit program uses triangle barycentric coordinates to interpolate vertex normals, texture coordinates, and tangents. It also computes the geometric normal, which is retained separately for refraction and ray-origin offsets. The miss program records that no surface was found.
+
+### Two OptiX execution paths
+
+The first path uses OptiX only for intersection queries. The CPU controls the bounce loop, and a separate CUDA kernel shades each batch of intersections.
+
+The second path moves the bounce loop and shading into `__raygen__pathtrace`. Each invocation maintains a path locally, repeatedly traces and shades it until termination, and writes its completed contribution for the CUDA `finalGather` kernel. Camera-ray generation can also run inside this raygen program, removing the separate camera-generation kernel.
+
+Both paths share the same closest-hit and miss programs. Image accumulation and conversion to the OpenGL pixel buffer remain CUDA operations.
+
+## Rendering Architecture and Performance
+
+### CUDA Baseline
+
+The CUDA baseline uses a CPU-controlled bounce loop with separate GPU kernels for camera-ray generation, intersection testing, and shading. Each iteration generates one jittered camera ray per pixel and accumulates its contribution into the image.
+
+The intersection kernel tests each active ray against every sphere and box in the JSON scene. The shading kernel updates the path’s throughput and direction, or terminates it when it misses, reaches an emitter, or exhausts its bounce budget.
+
+```mermaid
+flowchart TD
+    A["Generate camera rays — CUDA"] --> B{"Bounce limit reached?"}
+    B -->|No| C["Intersect scene — CUDA"]
+    C --> D["Shade and update paths — CUDA"]
+    D --> B
+    B -->|Yes| E["Accumulate contributions — CUDA"]
+    E --> F["Tone map and write OpenGL PBO — CUDA"]
+```
+
+Without stream compaction, each bounce launches kernels over the full path buffer. Terminated paths return early, but their slots remain part of subsequent launches.
+
+### Stream Compaction
+
+Stream compaction groups surviving paths at the front of the path buffer after shading. The next bounce can then launch work over only the surviving paths.
+
+```mermaid
+flowchart TD
+    A["Generate camera rays — CUDA"] --> B{"Active paths remain?"}
+    B -->|Yes| C["Intersect active paths — CUDA"]
+    C --> D["Shade and update paths — CUDA"]
+    D --> E["Partition active and terminated paths"]
+    E --> F["Read active count to CPU"]
+    F --> B
+    B -->|No| G["Accumulate contributions — CUDA"]
+    G --> H["Tone map and write OpenGL PBO — CUDA"]
+```
+
+Partitioning preserves terminated paths and their completed contributions. Each path retains its original pixel index, allowing `finalGather` to accumulate the result into the correct pixel after reordering.
+
+The implementation supports four configurations:
+
+| `USE_PARTITION` | Configuration | Subsequent launches |
+|---|---|---|
+| `0` | No partitioning | Full path count; terminated paths return early. |
+| `1` | Thrust partition | Active path count returned by `thrust::partition`. |
+| `2` | CUB partition with reusable temporary storage | Active path count copied back to the CPU. |
+
+The flowchart above describes modes `1` and `2`. Mode `3` retains a fixed number of bounce iterations and full-size launches, avoiding the active-count readback while still grouping active paths.
+
+Compaction introduces partitioning overhead, and modes `1` and `2` also require the CPU to obtain the active count before scheduling the next bounce. Its benefit therefore depends on how quickly paths terminate and how much intersection and shading work remains.
+
+### Stream Compaction Evaluation
+
+The comparison uses identical camera settings, materials, resolution, and maximum bounce depth within each test scene.
+
+- **Open scene:** Measure how quickly escaping paths reduce the active workload.
+- **Closed scene:** Measure the benefit when more paths survive until reaching an emitter or the bounce limit.
+- **Surviving paths:** Plot the active path count after each bounce.
+- **Execution time:** Compare intersection, shading, partitioning, and total iteration time using Nsight Systems.
+
+<img src="https://github.com/user-attachments/assets/e02a7a57-9da3-40c8-9d59-c5864f8c7c77" alt="TestObject5 OccludedBackground" width="360" />
+
+*Occluded-background test scene.*
+
+#### CUDA Profiling: Brute Force, BVH, and Compaction
+
+| Configuration | Capture |
+|---|---|
+| CUDA brute force | <img src="https://github.com/user-attachments/assets/2bf9c658-5221-44aa-bf48-49ec5645594d" alt="CUDA brute force" width="900" /> |
+| CUDA brute force + CUB | <img src="https://github.com/user-attachments/assets/09412aa1-b10d-4e89-9701-df34e60cf843" alt="CUDA brute force + CUB" width="900" /> |
+| CUDA BVH | <img src="https://github.com/user-attachments/assets/1c726837-9c6b-4b50-8b94-2cfd9e211447" alt="CUDA BVH" width="900" /> |
+| CUDA BVH + CUB | <img src="https://github.com/user-attachments/assets/9f1b7dc5-f3ac-40ad-98d4-d719ed430ec2" alt="CUDA BVH + CUB" width="900" /> |
+
+The brute-force capture is dominated by long `computeTriangleIntersections` kernels. Its selected-frame average is **65.87 ms (15.18 FPS)**. Adding CUB reduces this to **51.36 ms (19.47 FPS)**, about **22% less frame time**. Intersection work still dominates, but reducing the active workload is valuable while every surviving ray must test the mesh's triangles.
+
+Introducing a CUDA BVH changes the scale of the workload: the no-compaction capture averages **4.35 ms (229.72 FPS)**, approximately **15.1× faster** than the brute-force capture. The timeline now exposes the repeated intersection/shading sequence instead of being dominated by one very long intersection kernel.
+
+Adding CUB to the BVH version averages **5.48 ms (182.33 FPS)** in the selected frames, about **26% more frame time** than BVH alone. The GPU timeline contains additional work, memory operations, and gaps, while the CPU API row repeatedly enters `cudaMemcpy`. Once intersection is much cheaper, partitioning and the dependencies between bounces can outweigh the work saved by removing terminated paths. The controlled Suzanne benchmark shows the same direction, although a smaller difference: **226 FPS without CUB versus 210 FPS with CUB**.
+
+These are selected-frame summaries from profiler captures, not replacements for the controlled benchmark averages. The captures use different horizontal time scales; compare their time labels and reported durations rather than bar widths. Long CPU API calls can include waiting for earlier GPU work. For example, `cudaGLMapBufferObject` spans much of the brute-force frame while intersection kernels run, and long `cudaMemcpy` calls overlap GPU execution in the CUB capture. Their CPU durations should not be interpreted as isolated transfer costs. The kernel/memory percentages shown on the CUDA track are also not SM occupancy or memory-bandwidth measurements.
 
 
-<img width="800" height="800" alt="Reflective2" src="https://github.com/user-attachments/assets/65ed8a8e-f0e7-4b46-8354-657deec5012c" />
-<img width="800" height="800" alt="Reflective1" src="https://github.com/user-attachments/assets/d560495f-a8d7-4db4-86e4-30f6ff0ced62" />
-<img width="800" height="800" alt="Reflective" src="https://github.com/user-attachments/assets/5aeab3fe-8a2f-4fd4-b424-8e7e98f33d5c" />
-<img width="800" height="800" alt="NotFinal" src="https://github.com/user-attachments/assets/7f69a0ba-f6ef-45e6-8ffa-d7ec2b07e257" />
-<img width="800" height="800" alt="NormalMap" src="https://github.com/user-attachments/assets/36eb52eb-9690-4619-814b-f2e5253790e4" />
-<img width="800" height="800" alt="No MIS" src="https://github.com/user-attachments/assets/4c4cbd31-4290-49ab-8a36-76444e5dcd8e" />
-<img width="800" height="800" alt="MetallicRoughnessMap" src="https://github.com/user-attachments/assets/4da282d2-7856-4a8b-b0ac-6037eaf65571" />
-<img width="800" height="800" alt="Metallic Roughness" src="https://github.com/user-attachments/assets/b8770a1d-44ca-4cf3-8073-84980035a6f7" />
-<img width="800" height="800" alt="Metallic Roughness Gold" src="https://github.com/user-attachments/assets/93ab6e98-6aac-4109-8491-e92f9f487d70" />
-<img width="800" height="800" alt="Metallic Roughness Blue" src="https://github.com/user-attachments/assets/c62bac1c-4c05-4cc9-bca6-f9104cac4fbc" />
-<img width="580" height="512" alt="JitterX_Cornell" src="https://github.com/user-attachments/assets/05b47519-6486-4388-b0fe-94559746b913" />
-<img width="2061" height="1118" alt="JitterX" src="https://github.com/user-attachments/assets/c4ff0c9f-5d0e-430b-84ab-a97fb8eb20b2" />
-<img width="560" height="492" alt="JitterO_Cornell" src="https://github.com/user-attachments/assets/b816cc70-a4e2-4987-bec5-603dba39aed3" />
-<img width="2075" height="1197" alt="JitterO" src="https://github.com/user-attachments/assets/8ea4ffec-e8c1-4e3d-9395-3d98440544d2" />
-<img width="800" height="800" alt="Environment Map MIS" src="https://github.com/user-attachments/assets/fa2c5f14-f4a9-4186-ab7c-dc1be2c8a0a5" />
-<img width="1150" height="760" alt="cornell 2026-10-07_11-57-11z 50000samp" src="https://github.com/user-attachments/assets/4c291d1b-6c14-4230-a87c-b7dd20ddd155" />
-<img width="800" height="800" alt="AllTexturesCombined" src="https://github.com/user-attachments/assets/43dfa633-abe1-4518-8aec-3ab391c037ed" />
-<img width="1150" height="760" alt="6" src="https://github.com/user-attachments/assets/52349970-5202-43f4-8761-e4c857d4fcfb" />
-<img width="1150" height="760" alt="5" src="https://github.com/user-attachments/assets/6b081d53-71d7-45c5-96e4-296da682ee11" />
-<img width="1150" height="760" alt="4" src="https://github.com/user-attachments/assets/ad3da490-d793-4595-acb9-d72624c7ecaf" />
-<img width="1150" height="760" alt="3" src="https://github.com/user-attachments/assets/9e88f119-b532-464f-91b4-1011f2da8805" />
-<img width="1000" height="800" alt="2" src="https://github.com/user-attachments/assets/66a21fa1-66bb-477f-b683-75c02681bcb7" />
-<img width="800" height="800" alt="1" src="https://github.com/user-attachments/assets/9b3ce840-2d83-4ab5-948b-c7c038f368a6" />
-<img width="800" height="800" alt="Refractive2" src="https://github.com/user-attachments/assets/c67598d9-b398-46ae-924d-a5ca8ce4b23e" />
-<img width="800" height="800" alt="Refractive1" src="https://github.com/user-attachments/assets/eff32a26-d407-43f0-9589-99c5fed35f13" />
-<img width="800" height="800" alt="TestObject2_Suzanne3936" src="https://github.com/user-attachments/assets/77171d03-9835-409a-a178-f7dc240016ff" />
-<img width="800" height="800" alt="TestObject1_Box12" src="https://github.com/user-attachments/assets/fc3befeb-e141-429b-98f5-e413fbe92649" />
-<img width="800" height="800" alt="RoughnessP2F" src="https://github.com/user-attachments/assets/d84a16ef-6f20-4d32-b7ae-543cf14ec54d" />
-<img width="800" height="800" alt="RoughnessP2" src="https://github.com/user-attachments/assets/b1ff3d82-a87a-4da0-a87c-9b1f5e6de6dc" />
-<img width="800" height="800" alt="RoughnessHF" src="https://github.com/user-attachments/assets/b6c4d600-f27a-4581-a4f5-693d5f85480b" />
-<img width="800" height="800" alt="RoughnessH" src="https://github.com/user-attachments/assets/8e820d09-2ef3-4ecb-a8a8-ea9228ff5dcf" />
-<img width="800" height="800" alt="Roughness1F" src="https://github.com/user-attachments/assets/de16eb16-8c9e-4c5c-9518-f79e0bdda7f4" />
-<img width="800" height="800" alt="Roughness1" src="https://github.com/user-attachments/assets/289351dd-12e5-47a9-9888-5d6efa31b95e" />
-<img width="800" height="800" alt="Roughness0F" src="https://github.com/user-attachments/assets/a45110fd-82f4-4a7f-83b0-68b563afeec6" />
-<img width="800" height="800" alt="Roughness0" src="https://github.com/user-attachments/assets/4b088eed-bc23-4c6e-a3d3-9fcbe821778d" />
-<img width="800" height="800" alt="TextureMap" src="https://github.com/user-attachments/assets/e27e00d8-9869-4a39-9d99-0227dd082011" />
-<img width="800" height="800" alt="TestObject5_OccludedBackground" src="https://github.com/user-attachments/assets/e02a7a57-9da3-40c8-9d59-c5864f8c7c77" />
-<img width="800" height="800" alt="TestObject4_Sponza262267" src="https://github.com/user-attachments/assets/34f7b529-89e4-4e50-808f-4b02bb25e5a2" />
-<img width="800" height="800" alt="TestObject3_FlightHelmet94722" src="https://github.com/user-attachments/assets/c3f66374-f247-4b0b-8601-b30db7042e9a" />
+### OptiX Intersection Queries
 
+This version preserves the CPU-controlled bounce loop but replaces the CUDA intersection kernel with an OptiX launch. Each raygen invocation reads an existing path and calls `optixTrace`. The closest-hit or miss program writes an intersection result, which the separate CUDA shading kernel then consumes.
+
+```mermaid
+flowchart TD
+    A["Generate camera rays — CUDA"] --> B{"Continue bouncing?"}
+    B -->|Yes| C["Launch intersection queries — OptiX"]
+    subgraph OPTIX["OptiX intersection launch"]
+        C --> D["Trace against triangle GAS"]
+        D --> E["Closest-hit or miss writes intersection"]
+    end
+    E --> F["Shade and update paths — CUDA"]
+    F --> G["Optional path partitioning"]
+    G --> B
+    B -->|No| H["Accumulate contributions — CUDA"]
+    H --> I["Tone map and write OpenGL PBO — CUDA"]
+```
+
+With active-count compaction enabled, the loop continues while active paths remain. Without it, the loop runs to the configured bounce limit, and terminated paths return early.
+
+This architecture introduces accelerated triangle intersection while preserving the original separation between tracing and shading. However, every bounce still requires an OptiX launch, a CUDA shading launch, and optional partitioning. Intersection results and updated path state pass between stages through GPU buffers.
+
+#### OptiX Profiling: No Compaction, Thrust, and CUB
+
+| Configuration | Capture |
+|---|---|
+| OptiX intersections — no compaction | <img src="https://github.com/user-attachments/assets/cbc2e081-6160-4053-a626-c988f5fca8b2" alt="OptiX intersections — no compaction" width="900" /> |
+| OptiX intersections + Thrust | <img src="https://github.com/user-attachments/assets/8dc1836b-47a3-4030-8904-282cb9fbd4cc" alt="OptiX intersections + Thrust" width="900" /> |
+| OptiX intersections + CUB | <img src="https://github.com/user-attachments/assets/b1cfd5d3-a423-4512-9e8a-640bef1df6e1" alt="OptiX intersections + CUB" width="900" /> |
+
+Without compaction, the capture shows repeated pairs of OptiX intersection launches and CUDA shading kernels. Later pairs are shorter, but each bounce still requires host scheduling and separate stages. Small memory events and repeated CPU `cudaMemcpy` calls are visible even in the no-compaction capture, so not every transfer in an OptiX timeline can be attributed to path compaction.
+
+The Thrust capture shows substantial time in kernels whose names begin with `thrust::...`, followed by further Thrust work. Long `cudaStreamSynchronize` calls and a visible `cudaFree` accompany this sequence. This is evidence that the selected compaction implementation introduces substantial processing and synchronization around an otherwise short intersection/shading stage. The screenshot alone does not identify the purpose of every internal Thrust kernel. The benchmark results establish the overall penalty: for Suzanne, **320 FPS without compaction drops to 132 FPS with Thrust**; Thrust is slower in all four reported scenes.
+
+The CUB capture shows a prominent initial partition stage followed by much smaller later-bounce tasks and memory events. This is consistent with the benefit of processing fewer surviving paths, although the screenshot does not report their counts. In the controlled results, CUB raises Suzanne from **320 to 342 FPS** and FlightHelmet from **295 to 300 FPS**, but lowers Sponza from **99 to 77 FPS**. CUB substantially improves on this Thrust implementation, but compaction is still a scene-dependent tradeoff.
+
+#### Enclosed Scene: Compaction Has Less Work to Remove
+
+| Configuration | Capture |
+|---|---|
+| OptiX intersections — enclosed, no compaction | <img src="https://github.com/user-attachments/assets/3df02eaa-99e3-4ad4-b61d-d1aa8b61155e" alt="OptiX intersections — enclosed, no compaction" width="900" /> |
+| OptiX intersections — enclosed, CUB | <img src="https://github.com/user-attachments/assets/df2bfd90-5aa7-4871-b595-8dcac35381a1" alt="OptiX intersections — enclosed, CUB" width="900" /> |
+
+In the enclosed no-compaction capture, substantial intersection and shading work remains across the bounce sequence. With CUB, substantial work also persists, with partition stages and memory operations repeated between bounces. Unlike the rapidly shrinking tail in the other CUB capture, this sequence suggests that more paths continue bouncing inside the enclosure.
+
+The selected-frame average increases from **8.37 ms (119.52 FPS)** without compaction to **12.11 ms (82.56 FPS)** with CUB: about **45% more frame time**, or **31% lower FPS**. This supports the expected limitation of compaction in a closed scene: paying to partition paths is less useful when many paths survive. Actual per-bounce active counts would be needed to quantify that explanation.
+
+
+### Moving the Bounce Loop into OptiX Raygen
+
+The next version moves the entire per-path bounce loop into `__raygen__pathtrace`. Each invocation reads a camera path, traces it, evaluates its material, and repeats until the path terminates.
+
+```mermaid
+flowchart TD
+    A["Generate camera rays — CUDA"] --> B["Launch path tracer — OptiX"]
+    subgraph OPTIX["One OptiX launch"]
+        B --> C["Read camera path"]
+        C --> D{"Path still active?"}
+        D -->|Yes| E["Trace against triangle GAS"]
+        E --> F["Closest-hit or miss writes intersection"]
+        F --> G["Shade and update local path"]
+        G --> D
+        D -->|No| H["Write completed path contribution"]
+    end
+    H --> I["Accumulate contributions — CUDA"]
+    I --> J["Tone map and write OpenGL PBO — CUDA"]
+```
+
+The CPU no longer schedules individual bounces. Path state is maintained locally within each invocation, and the completed contribution is written to the output buffer after termination. Intersection results still use the shared intersection buffer.
+
+This removes the separate shading launches and per-bounce partitioning passes. It also changes how work is distributed: invocations can execute different numbers of bounces and take different material branches. The performance comparison examines the balance between reduced launch and buffer traffic overhead and this variation in execution.
+
+#### Profiling the Raygen Bounce Loop
+
+| Configuration | Capture |
+|---|---|
+| OptiX bounce loop | <img src="https://github.com/user-attachments/assets/bd769251-14db-4994-9b55-1531d0656da9" alt="OptiX bounce loop" width="900" /> |
+
+The repeated intersection/shading launch pairs are replaced by one main OptiX GPU interval. A separate `generateRayFromCamera` kernel still precedes it, and `finalGather` and display conversion follow it. The capture therefore directly shows the reduction in separately scheduled stages. It reports **1.73 ms (577.38 FPS)** over the selected frames.
+
+The controlled Suzanne benchmark increases from **320 FPS** with OptiX intersection queries alone to **680 FPS** with the bounce loop in raygen, a **2.13× speedup**. This is consistent with avoiding per-bounce host scheduling and separate shading launches. The timeline does not independently measure the contribution of reduced buffer traffic, register use, or divergence, and shading still executes on GPU SMs.
+
+
+### Generating Camera Rays Inside Raygen
+
+The final architecture also generates camera rays inside `__raygen__pathtrace`. Each invocation derives its pixel coordinates from its launch index, generates a jittered camera ray, optionally applies thin-lens depth of field, and enters the bounce loop.
+
+This replaces the separate camera-generation kernel and the initial read from the path buffer. The rest of the raygen-loop architecture remains unchanged: completed contributions are written once, then accumulated and converted for display by CUDA kernels.
+
+The `USE_RAYGEN_CAMERA` toggle preserves the separate-camera version for comparison.
+
+#### Profiling Camera Generation Inside Raygen
+
+| Configuration | Capture |
+|---|---|
+| OptiX bounce loop + camera | <img src="https://github.com/user-attachments/assets/b62510f3-566d-4cca-8ef2-f16081fde46d" alt="OptiX bounce loop + camera" width="900" /> |
+| OptiX bounce loop + camera — no forced inline | <img src="https://github.com/user-attachments/assets/eb7fa38e-43b1-410c-97c3-5bc08483f515" alt="OptiX bounce loop + camera — no forced inline" width="900" /> |
+
+With camera generation included, the separate camera kernel disappears. The visible main GPU sequence becomes **OptiX path tracing → final gather → display conversion**. The selected-frame average is **1.13 ms (884.20 FPS)**, compared with **1.73 ms** in the separate-camera capture. The controlled Suzanne benchmark similarly improves from **680 to 960 FPS**, a **41% increase**.
+
+The second capture's active tab explicitly identifies **“no forced inline”**, so it is labeled separately here. It preserves the same three-stage GPU structure and reports **1.24 ms (806.28 FPS)**. Although its selected CPU-frame average is higher, the annotated OptiX NVTX ranges are nearly identical: **374.034 µs** in the first capture and **371.570 µs** without forced inline. These NVTX annotations are not a substitute for isolated GPU-kernel timing. The small selections do not establish that forced inlining speeds up the tracing kernel; repeated controlled measurements and kernel-level profiling would be needed to assess it.
+
+Gaps remain around the short GPU sequence. Once tracing is this fast, host execution, presentation, and scheduling are plausible contributors to total frame time, but these screenshots do not isolate their individual costs.
+
+
+### Shared Benchmark Configuration
+
+Within each scene, all implementations use identical triangle geometry, image resolution,
+emissive-light geometry and intensity, and maximum bounce depth.
+
+Surfaces use Lambertian diffuse shading with cosine-weighted hemisphere
+sampling. Textures, normal mapping, metallic–roughness shading, refraction, depth of
+field, environment lighting, and explicit direct-light sampling/MIS are
+disabled for these architecture comparisons.
+
+Camera framing may differ between benchmark scenes, but remains fixed
+across implementations within each scene. The enclosed Suzanne scene uses
+a fully closed diffuse box surrounding both Suzanne and the emitter.
+
+| Setting | Value |
+|---|---|
+| GPU | NVIDIA GeForce RTX 3060 |
+| Build configuration | Release |
+| Resolution | 800 x 800 |
+| Maximum bounce depth | 8 |
+| Samples / measurement interval | 10s, after 5 seconds of warmup |
+
+### Performance Results
+
+Average FPS under the shared benchmark configuration above. Column headings list mesh triangle counts.
+
+**CUDA BVH comparison:** I did not write the CUDA BVH and Möller-Trumbore intersection implementation. They were generated using Chat GPT under the permission of professor Schwartz, and used only as a performance baseline for comparison with my OptiX implementation. Therefore they were not included in my commits, and are not listed as supported features of this project.
+
+| **Implementation** | **Box: 12** | **Suzanne: 3,936** | **FlightHelmet: 94,722** | **Sponza: 262,267** |
+| :---: | ---: | ---: | ---: | ---: |
+| **CUDA Brute** | 420 | 15 | 0.7 | 0 |
+| **CUDA Brute + CUB** | 460 | 19 | 0.8 | 0.1 |
+| **CUDA BVH** | 410 | 226 | 110 | 11 |
+| **CUDA BVH + CUB** | 460 | 210 | 124 | 11 |
+| **OptiX ISect** | 350 | 320 | 295 | 99 |
+| **OptiX ISect + Thrust** | 175 | 132 | 125 | 31 |
+| **OptiX ISect + CUB** | 390 | 342 | 300 | 77 |
+| **OptiX Loop** | 755 | 680 | 576 | 162 |
+| **OptiX Loop + Cam** | 1070 | 960 | 723 | 172 |
+
+| Box — 12 triangles | Suzanne — 3,936 triangles |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/fc3befeb-e141-429b-98f5-e413fbe92649" alt="TestObject1 Box12" width="360" /> | <img src="https://github.com/user-attachments/assets/77171d03-9835-409a-a178-f7dc240016ff" alt="TestObject2 Suzanne3936" width="360" /> |
+
+| FlightHelmet — 94,722 triangles | Sponza — 262,267 triangles |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/c3f66374-f247-4b0b-8601-b30db7042e9a" alt="TestObject3 FlightHelmet94722" width="360" /> | <img src="https://github.com/user-attachments/assets/34f7b529-89e4-4e50-808f-4b02bb25e5a2" alt="TestObject4 Sponza262267" width="360" /> |
+The fastest measured configuration is **OptiX Loop + Cam** in all four scenes. Relative to CUDA BVH without compaction, it is **2.61× faster for Box**, **4.25× for Suzanne**, **6.57× for FlightHelmet**, and **15.64× for Sponza**. These ratios use the controlled FPS table, rather than selected profiler frames. The profiling captures above explain the architectural progression: accelerate intersection first, then reduce the repeated scheduling and staging work around it.
+
+## Visual Features
+
+The full feature set is implemented in the OptiX raygen path. The host-controlled rendering paths remain available for architecture comparisons.
+
+### Stochastic Antialiasing
+
+Each iteration samples a random position within every pixel and generates a camera ray through that position. Accumulating these samples progressively smooths silhouette edges and other subpixel details.
+
+Random seeds depend on the iteration and pixel index, with a fixed depth seed of zero for primary camera rays. Both the CUDA camera kernel and the OptiX camera implementation use this approach.
+
+| Without jitter - Mesh | With jitter - Mesh |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/c4ff0c9f-5d0e-430b-84ab-a97fb8eb20b2" alt="JitterX" width="360" /> | <img src="https://github.com/user-attachments/assets/8ea4ffec-e8c1-4e3d-9395-3d98440544d2" alt="JitterO" width="360" /> |
+
+| Without jitter - Implicit geometry | With jitter — Implicit geometry |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/05b47519-6486-4388-b0fe-94559746b913" alt="JitterX Cornell" width="360" /> | <img src="https://github.com/user-attachments/assets/b816cc70-a4e2-4987-bec5-603dba39aed3" alt="JitterO Cornell" width="360" /> |
+
+### Reflection, Refraction, and Fresnel
+
+The renderer supports smooth dielectric transmission and reflection. At each glass intersection, the geometric normal determines whether the ray is entering or leaving the surface, selecting the corresponding incident and transmitted indices of refraction.
+
+The full dielectric Fresnel equations determine the probability of reflection. Otherwise, the ray refracts according to Snell’s law. Total internal reflection produces a reflected ray, and transmitted paths include the squared relative-index-of-refraction factor for radiance transport.
+
+The outgoing ray origin is offset to the appropriate side of the geometric surface to reduce self-intersection artifacts.
+
+A separate reflective material supports perfect mirror reflection at zero roughness and microfacet reflection at nonzero roughness.
+
+| Reflection | Reflection 2 | Reflection 2 |
+| :---: | :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/5aeab3fe-8a2f-4fd4-b424-8e7e98f33d5c" alt="Reflective" width="360" /> | <img src="https://github.com/user-attachments/assets/d560495f-a8d7-4db4-86e4-30f6ff0ced62" alt="Reflective1" width="360" /> | <img src="https://github.com/user-attachments/assets/65ed8a8e-f0e7-4b46-8354-657deec5012c" alt="Reflective2" width="360" /> |
+
+| Refraction | Refraction 1 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/eff32a26-d407-43f0-9589-99c5fed35f13" alt="Refractive1" width="360" /> | <img src="https://github.com/user-attachments/assets/c67598d9-b398-46ae-924d-a5ca8ce4b23e" alt="Refractive2" width="360" /> |
+
+### Microfacet and Metallic–Roughness Materials
+
+#### Metallic–Roughness Grids
+
+The top left is **metallic = 1, roughness = 0**, and the bottom right is **metallic = 0, roughness = 1**.
+
+| White | Gold | Blue |
+| :---: | :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/b8770a1d-44ca-4cf3-8073-84980035a6f7" alt="Metallic Roughness" width="360" /> | <img src="https://github.com/user-attachments/assets/93ab6e98-6aac-4109-8491-e92f9f487d70" alt="Metallic Roughness Gold" width="360" /> | <img src="https://github.com/user-attachments/assets/c62bac1c-4c05-4cc9-bca6-f9104cac4fbc" alt="Metallic Roughness Blue" width="360" /> |
+
+#### Roughness Tests
+
+| Roughness: 0 | Roughness: 0 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/4b088eed-bc23-4c6e-a3d3-9fcbe821778d" alt="Roughness0" width="360" /> | <img src="https://github.com/user-attachments/assets/a45110fd-82f4-4a7f-83b0-68b563afeec6" alt="Roughness0F" width="360" /> |
+
+| Roughness: 0.2 | Roughness: 0.2 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/b1ff3d82-a87a-4da0-a87c-9b1f5e6de6dc" alt="RoughnessP2" width="360" /> | <img src="https://github.com/user-attachments/assets/d84a16ef-6f20-4d32-b7ae-543cf14ec54d" alt="RoughnessP2F" width="360" /> |
+
+| Roughness: 0.5 | Roughness:0.5 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/8e820d09-2ef3-4ecb-a8a8-ea9228ff5dcf" alt="RoughnessH" width="360" /> | <img src="https://github.com/user-attachments/assets/b6c4d600-f27a-4581-a4f5-693d5f85480b" alt="RoughnessHF" width="360" /> |
+
+| Roughness: 1 | Roughness: 1 |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/289351dd-12e5-47a9-9888-5d6efa31b95e" alt="Roughness1" width="360" /> | <img src="https://github.com/user-attachments/assets/de16eb16-8c9e-4c5c-9518-f79e0bdda7f4" alt="Roughness1F" width="360" /> |
+
+Rough reflective surfaces use the GGX / Trowbridge–Reitz microfacet distribution, a masking-shadowing term, and a Fresnel term. Sampled directions update path throughput using the BSDF value, surface cosine, and sampling probability density.
+
+The metallic–roughness material combines diffuse and specular reflection:
+
+- At metallic zero, the material has a colored diffuse component and a neutral specular component.
+- At metallic one, the diffuse component disappears and the base color controls specular reflection.
+- Intermediate values blend these behaviors.
+
+Sampling chooses between diffuse and specular directions. The throughput calculation uses the combined mixture PDF, accounting for both ways of generating a direction.
+
+For glTF materials, perceptual roughness is converted to the microfacet parameter using alpha = (roughnessFactor * roughnessTexture)^2.
+
+### glTF Mesh Loading
+
+The renderer loads indexed triangle meshes from `.gltf` files using TinyGLTF. Scene traversal combines parent and child transforms, applying the resulting world transform to each mesh instance.
+
+The loader reads vertex positions, normals, texture coordinates, tangents, and material properties. It handles accessor offsets and strides, validates buffer bounds, and supports unsigned 8-bit, 16-bit, and 32-bit triangle indices.
+
+Loaded mesh data is uploaded to GPU buffers and combined into a single OptiX geometry acceleration structure. Per-triangle material IDs connect each intersection to its material.
+
+The closest-hit program interpolates surface attributes using triangle barycentric coordinates. When vertex normals are unavailable, it uses the geometric triangle normal.
+
+The benchmark mesh renders are shown in the performance results above.
+
+### Texture, Metal Roughness, Normal Mapping
+
+| Base Color | Metallic–Roughness | Normal |
+| :---: | :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/e27e00d8-9869-4a39-9d99-0227dd082011" alt="Base-color texture applied" width="360" /> | <img src="https://github.com/user-attachments/assets/4da282d2-7856-4a8b-b0ac-6037eaf65571" alt="Diagnostic metallic–roughness map applied" width="360" /> | <img src="https://github.com/user-attachments/assets/36eb52eb-9690-4619-814b-f2e5253790e4" alt="Diagnostic normal map applied" width="360" /> |
+
+Material images are decoded into unsigned 8-bit RGBA data and uploaded to CUDA arrays. CUDA texture objects provide linear filtering and the configured wrapping behavior. Base-color textures receive sRGB decoding, while metallic–roughness and normal maps are sampled as linear numerical data. All three use interpolated `TEXCOORD_0` coordinates; texture transforms and additional UV sets are outside the current implementation’s scope.
+
+**Base-color mapping** multiplies the sampled texture color by the material’s base-color factor, allowing surface color to vary across a mesh.
+
+**Metallic–roughness mapping** reads roughness from the texture’s green channel and metallic from its blue channel. These values multiply the corresponding material factors. The combined roughness is squared to obtain the GGX microfacet parameter, while metallic remains linear. This creates spatially varying surface finishes without adding geometry.
+
+**Normal mapping** perturbs the shading normal using a tangent-space direction decoded from the texture. The decoded X and Y components are scaled by the material’s normal-map strength before normalization.
+
+The tangent frame uses interpolated glTF tangents when available; otherwise, it is derived from triangle edges and UV differences. The tangent is orthogonalized against the interpolated normal, and its handedness determines the bitangent orientation. The mapped normal is accepted only when it faces both the appropriate geometric hemisphere and the viewing direction. Degenerate tangent frames retain the original shading normal. Normal mapping applies to metallic–roughness materials, while glass continues to use the geometric normal.
+
+Together, these maps independently control surface color, material response, and shading detail:
+
+<img src="https://github.com/user-attachments/assets/43dfa633-abe1-4518-8aec-3ab391c037ed" alt="Base-color, metallic–roughness, and normal maps combined" width="600" />
+
+*All three maps applied together.*
+
+### HDR Environment Lighting and Multiple Importance Sampling
+
+| Environment MIS Disabled | Environment MIS Enabled |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/4c4cbd31-4290-49ab-8a36-76444e5dcd8e" alt="Environment lighting without MIS" width="360" /> | <img src="https://github.com/user-attachments/assets/fa2c5f14-f4a9-4186-ab7c-dc1be2c8a0a5" alt="Environment lighting with MIS" width="360" /> |
+
+An rectangular HDR image supplies incoming radiance from the surrounding environment. Ray directions are converted to texture coordinates, allowing the environment to appear as the background and illuminate surfaces through material interactions. The image is loaded as floating-point data to preserve high radiance values, while lighting calculations and progressive accumulation remain in linear space.
+
+With BSDF sampling alone, paths gather environment illumination when their sampled directions escape the scene. Small, bright regions of the environment can be difficult to sample consistently, producing high variance.
+
+To sample the environment directly, the loader builds a cumulative distribution over its pixels. Each pixel is weighted by its luminance and spherical solid angle, with a small luminance floor to preserve sampling support in dark regions. The GPU selects a pixel using binary search, then samples a direction uniformly within that pixel’s solid angle.
+
+For metallic–roughness materials, **multiple importance sampling (MIS)** combines two strategies:
+
+- **Environment sampling:** Sample a direction from the environment distribution and trace a visibility ray.
+- **BSDF sampling:** Sample a direction from the material distribution and evaluate the environment if the path escapes.
+
+Both PDFs are expressed per unit solid angle. Their contributions are weighted using the power heuristic:
+
+$$
+w_a = \frac{p_a^2}{p_a^2 + p_b^2}
+$$
+
+The renderer stores the previous BSDF PDF so that an escaping BSDF-sampled ray receives the complementary MIS weight. Direct-light contributions are accumulated separately from path throughput.
+
+`USE_ENVIRONMENT_MIS` toggles direct environment sampling and MIS. Enabling it adds distribution-sampling work and visibility rays per eligible surface hit, trading additional work per iteration for the potential to reduce variance. When disabled, environment illumination is gathered through BSDF-sampled paths alone.
+
+### Depth of Field
+
+The OptiX camera implements a thin-lens model. A jittered pinhole ray first determines a point on the focal plane. The ray origin is then sampled uniformly over a circular aperture, and its direction is adjusted toward that focal point.
+
+The camera exposes two JSON parameters:
+
+| Parameter | Effect |
+|---|---|
+| `APERTURE_RADIUS` | Controls the aperture size; zero produces a pinhole camera. |
+| `FOCAL_DISTANCE` | Sets the focal plane’s distance along the camera’s forward direction. |
+
+Depth of field is available when camera rays are generated inside OptiX raygen.
+
+### Tone Mapping and Gamma Correction
+
+RGB values in scenes are usually in a much larger range than 0 - 255, in order to account for the different intensity of light, so  we apply Reinhard tone mapping in order to map this back into the 8 bit rgb range, .
+
+
+In addition, to account for the fact that humans are more sensitive to color changes in the dark, we must apply gamma correction to tailor the linear rgb values to human perception.
+
+The result is converted to 8-bit color and written directly to the OpenGL pixel buffer. Tone mapping affects the displayed image while the accumulation buffer retains linear radiance.
+
+| Without Reinhard and gamma correction | With Reinhard and gamma correction |
+| :---: | :---: |
+| <img src="https://github.com/user-attachments/assets/3435923e-93de-416d-91fa-82be2120388b" alt="Without Reinhard and gamma correction" width="420" /> | <img src="https://github.com/user-attachments/assets/19f1a6e8-e5f8-477c-8004-b60cdb501649" alt="With Reinhard and gamma correction" width="420" /> |
+
+Without the display conversion, the vegetation and much of the helmet appear very dark, while the brightest reflections become nearly solid white. With Reinhard tone mapping and gamma correction, shadow and midtone detail is more visible and the bright reflections retain more visible variation. Reinhard compresses high radiance values, while gamma correction changes their display encoding; this pair demonstrates their combined effect rather than isolating either operation.
+
+## Build and Usage
+
+### Installing the OptiX SDK
+
+Download the NVIDIA OptiX SDK from the [official OptiX page](https://developer.nvidia.com/designworks/optix/download). This project was developed with OptiX SDK 9.1.0.
+
+After installing or extracting the SDK, set OPTIX_ROOT in CMakeLists.txt to its installation directory. For example:
+
+```cmake
+set(OPTIX_ROOT "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1.0")
+```
+
+The selected directory should contain include/optix.h. Reconfigure CMake after changing the path.
+
+The CUDA Toolkit must also be installed separately; it is used to compile the renderer and generate the PTX loaded by OptiX.
+
+
+### Build Configuration
+
+The project uses CMake with C++17 and CUDA17. The current configuration targets an RTX 3060 and references OptiX SDK 9.1.0.
+
+Before configuring the project, update OPTIX_ROOT in CMakeLists.txt to your local OptiX SDK installation.
+
+Build in Release mode for performance measurements. The current CMake configuration enables CUDA device debugging (`-G`) for both Debug and RelWithDebInfo.
+
+### CMake Integration
+
+`CMakeLists.txt` was modified beyond adding source files to integrate OptiX:
+
+- Added the TinyGLTF and OptiX include directories.
+- Added a separate `optixPrograms` target that compiles `optixPrograms.cu` to PTX.
+- Configured the PTX target for compute capability 8.6 using `86-virtual`.
+- Disabled separable compilation for the PTX target.
+- Made the renderer depend on the PTX target.
+- Defined `OPTIX_PTX_PATH` so the renderer can locate the generated PTX file.
+
+The main executable uses native CUDA architecture selection, while the OptiX PTX target explicitly uses compute capability 8.6.
+
+### Scene Selection
+
+The executable accepts a JSON scene file:
+
+```bash
+cis565_path_tracer scenes/cornell.json
+```
+
+In Visual Studio, set the scene path under **Debugging > Command Arguments**, relative to the configured working directory.
+
+The JSON file supplies camera and rendering settings, including resolution, sample count, maximum bounce depth, and output filename.
+
+The current OptiX scene selects its glTF model and HDR environment separately in `main.cpp`:
+
+```cpp
+loadGltf("../scenes/DamagedHelmet/DamagedHelmet.gltf",
+         loadedMeshes, loadedImages, loadedTextures);
+
+loadEnvironment("../img/greenwich_park_4k.hdr", environment);
+```
+
+These paths are relative to the process working directory. Keep each glTF file together with its referenced buffers and textures.
+
+### Rendering Configuration
+
+The main architecture toggles are defined in `pathtrace.cu`:
+
+```cpp
+#define USE_OPTIX 1
+#define USE_PARTITION 0
+#define USE_RAYGEN_LOOP 1
+#define USE_RAYGEN_CAMERA 1
+```
+
+Direct environment sampling and MIS are controlled in `optixPrograms.cu`:
+
+```cpp
+#define USE_ENVIRONMENT_MIS 1
+```
+
+These are compile-time settings and require rebuilding after changes.
+
+## References and Credits
+
+### Libraries and Framework
+
+- NVIDIA OptiX — ray-tracing pipeline and acceleration structure support.
+- NVIDIA CUDA, Thrust, and CUB — GPU execution and path partitioning.
+- TinyGLTF — glTF parsing and material-image loading.
+- stb_image / stb_image_write — image loading and output.
+
+### Rendering References
+
+- Physically Based Rendering
+  - Diffuse Reflection.
+  - Dielectric BSDF.
+  - Roughness Using Microfacet Theory.
+  - The Thin Lens Model and Depth of Field.
+  - A Better Path Tracer.
+- glTF 2.0 specification - scene transforms, accessors, material factors, and texture conventions.
+- NVIDIA OptiX documentation - modules, program groups, pipelines, shader binding tables, and acceleration structures.
+- My earlier GLSL path tracer and PBR shader - references for the material implementation.
+- Typescript environment lighting MIS implementation from a pbr group chat.
+- Licenses included in the individual folders of each gltf asset file.
 
