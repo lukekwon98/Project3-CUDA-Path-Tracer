@@ -282,7 +282,7 @@ The Nsight Systems captures show the resulting change in execution structure. Re
 
 The repeated intersection/shading launch pairs are replaced by one main OptiX GPU interval. A separate `generateRayFromCamera` kernel still precedes it, and `finalGather` and display conversion follow it. The capture therefore directly shows the reduction in separately scheduled stages. It reports **1.73 ms (577.38 fps)** over the selected frames.
 
-The controlled Suzanne benchmark increases from **320 FPS** with OptiX intersection queries alone to **680 FPS** with the bounce loop in raygen, a **2.13× speedup**. This is consistent with avoiding per-bounce host scheduling and separate shading launches. The timeline does not independently measure the contribution of reduced buffer traffic, register use, or divergence, and shading still executes on GPU SMs.
+The controlled Suzanne benchmark increases from **320 FPS** with OptiX intersection queries alone to **680 FPS** with the bounce loop in raygen, a **2.13× speedup**. This is consistent with avoiding per-bounce host scheduling and separate shading launches.
 
 
 ### Generating Camera Rays Inside Raygen
