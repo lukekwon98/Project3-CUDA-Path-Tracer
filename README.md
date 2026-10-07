@@ -13,6 +13,8 @@ This project is a GPU path tracer built with CUDA and NVIDIA OptiX, supporting g
 
 The project explores how rendering architecture affects performance: starting with separate CUDA kernels for camera generation, intersection, and shading, then introducing OptiX intersections, moving the bounce loop into raygen, and finally generating camera rays within the same program. The earlier execution paths remain available for comparison.
 
+<img src="https://github.com/user-attachments/assets/6b081d53-71d7-45c5-96e4-296da682ee11" alt="5" width="900" />
+
 <img src="https://github.com/user-attachments/assets/4c291d1b-6c14-4230-a87c-b7dd20ddd155" alt="cornell 50000samp" width="900" />
 
 *50,000-sample render.*
