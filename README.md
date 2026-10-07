@@ -166,10 +166,7 @@ The brute-force capture is dominated by long `computeTriangleIntersections` kern
 
 Introducing a CUDA BVH changes the scale of the workload. The no-compaction capture averages **4.35 ms (229.72 FPS)**, approximately **15.1× faster** than the brute-force capture. The timeline now exposes the repeated intersection/shading sequence instead of being dominated by one very long intersection kernel.
 
-Adding CUB to the BVH version averages **5.48 ms (182.33 FPS)** in the selected frames, about **26% more frame time** than BVH alone. The GPU timeline contains additional work, memory operations, and gaps, while the CPU API row repeatedly enters `cudaMemcpy`. Once intersection is much cheaper, partitioning and the dependencies between bounces can outweigh the work saved by removing terminated paths. The controlled Suzanne benchmark shows the same direction, although a smaller difference: **226 FPS without CUB versus 210 FPS with CUB**.
-
-Long CPU API calls can include waiting for earlier GPU work. For example, `cudaGLMapBufferObject` spans much of the brute-force frame while intersection kernels run, and long `cudaMemcpy` calls overlap GPU execution in the CUB capture. Their CPU durations should not be interpreted as isolated transfer costs. The kernel/memory percentages shown on the CUDA track are also not SM occupancy or memory-bandwidth measurements.
-
+Adding CUB to the BVH version averages **5.48 ms (182.33 FPS)** in the selected frames, about **26% more frame time** than BVH alone. The GPU timeline contains additional work, memory operations, and gaps, while the CPU API row repeatedly enters `cudaMemcpy`. Once intersection is much cheaper, partitioning and the dependencies between bounces can outweigh the work saved by removing terminated paths. The controlled Suzanne benchmark shows the same direction, although a smaller difference: **226 FPS without CUB versus 210 FPS with CUB**
 
 ### OptiX Intersection Queries
 
