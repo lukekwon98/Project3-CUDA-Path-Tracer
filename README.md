@@ -47,6 +47,44 @@ The renderer uses OptiX to build a geometry acceleration structure (GAS) over th
 | Geometry acceleration structure (GAS) | Accelerates intersection queries over the uploaded triangle mesh. |
 | Launch parameters | Provide GPU programs with the scene buffers, camera, materials, textures, and rendering settings. |
 
+### Setup Sequence
+
+OptiX setup happens once during initialization. The resulting pipeline, shader binding table, and scene data are then reused for rendering.
+
+1. **Create the device context.** Initialize CUDA and OptiX, then create an OptiX device context associated with the renderer’s CUDA context.
+
+2. **Load the PTX and create a module.** CMake compiles `optixPrograms.cu` into PTX during the build. At runtime, OptiX loads that PTX into a module containing the raygen, closest-hit, and miss programs.
+
+3. **Create program groups.** Each program group references the module and selects the entry point for its role: ray generation, closest hit, or miss.
+
+4. **Create the pipeline.** Link the program groups into a pipeline and configure the stack sizes required to execute them.
+
+5. **Build the shader binding table (SBT).** Pack headers from the program groups into SBT records and upload them to GPU memory. The SBT tells a launch which raygen, miss, and hit-group records to use.
+
+6. **Upload geometry and build the GAS.** Upload the triangle mesh and build its acceleration structure. OptiX returns a traversable handle that identifies the GAS for subsequent ray queries. This geometry setup is independent of module and pipeline creation.
+
+7. **Populate launch parameters.** Store the GAS handle, GPU buffer pointers, camera data, and rendering settings in the launch-parameter structure, then upload it to the GPU.
+
+8. **Launch rendering.** Call `optixLaunch` with the pipeline, SBT, launch parameters, CUDA stream, and launch dimensions. The raygen program calls `optixTrace` with the GAS handle; traversal then invokes the appropriate closest-hit or miss program.
+
+```mermaid
+flowchart TD
+    A["CUDA and OptiX device context"] --> B["PTX module"]
+    B --> C["Program groups"]
+    C --> D["Pipeline"]
+    C --> E["SBT records"]
+    A --> F["Upload triangles and build GAS"]
+    F --> G["Launch parameters: GAS handle and scene data"]
+    D --> H["optixLaunch"]
+    E --> H
+    G --> H
+    H --> I["Raygen: optixTrace"]
+    I --> J["GAS traversal and intersection"]
+    J --> K["Closest-hit or miss program"]
+```
+
+The pipeline supplies the executable programs, the SBT selects their records, and the launch parameters supply the data those programs operate on.
+
 ### Geometry and intersection data
 
 The glTF loader applies scene-node transforms to mesh data before uploading it. Meshes are combined into a single triangle GAS, with per-triangle material IDs linking geometry to shading data.
