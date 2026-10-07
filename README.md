@@ -510,11 +510,7 @@ For metallic–roughness materials, **multiple importance sampling (MIS)** combi
 - **Environment sampling:** Sample a direction from the environment distribution and trace a visibility ray.
 - **BSDF sampling:** Sample a direction from the material distribution and evaluate the environment if the path escapes.
 
-Both PDFs are expressed per unit solid angle. Their contributions are weighted using the power heuristic:
-
-$$
-w_a = \frac{p_a^2}{p_a^2 + p_b^2}
-$$
+Both PDFs are expressed per unit solid angle. Their contributions are weighted using the power heuristic p_a^2/(p_a^2 + p_b^2}.
 
 The renderer stores the previous BSDF PDF so that an escaping BSDF-sampled ray receives the complementary MIS weight. Direct-light contributions are accumulated separately from path throughput.
 
