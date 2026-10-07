@@ -158,10 +158,6 @@ The comparison uses identical camera settings, materials, resolution, and maximu
 - **Surviving paths:** Plot the active path count after each bounce.
 - **Execution time:** Compare intersection, shading, partitioning, and total iteration time using Nsight Systems.
 
-<img src="https://github.com/user-attachments/assets/e02a7a57-9da3-40c8-9d59-c5864f8c7c77" alt="TestObject5 OccludedBackground" width="360" />
-
-*Occluded-background test scene.*
-
 #### CUDA Profiling: Brute Force, BVH, and Compaction
 
 | Configuration | Capture |
@@ -233,7 +229,11 @@ Fixed-count CUB is slower than no compaction in every tested scene. Although it 
 
 Compared with active-count CUB, fixed-count CUB performs substantially worse for Box, Suzanne, and FlightHelmet. Sponza is nearly unchanged at 78 versus 77 FPS.
 
-#### Enclosed Scene: Compaction Has Less Work to Remove
+#### Enclosed Scene
+
+| Open | Enclosed |
+|---|---|
+| <img src="https://github.com/user-attachments/assets/77171d03-9835-409a-a178-f7dc240016ff" alt="TestObject2 Suzanne3936" /> | <img src="https://github.com/user-attachments/assets/e02a7a57-9da3-40c8-9d59-c5864f8c7c77" alt="TestObject5 OccludedBackground" width="360" /> |
 
 | Configuration | Capture |
 |---|---|
