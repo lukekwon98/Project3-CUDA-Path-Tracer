@@ -201,9 +201,9 @@ This architecture introduces accelerated triangle intersection while preserving 
 
 Without compaction, the capture shows repeated pairs of OptiX intersection launches and CUDA shading kernels. Later pairs are shorter, but each bounce still requires host scheduling and separate stages. Small memory events and repeated CPU `cudaMemcpy` calls are visible even in the no-compaction capture, so not every transfer in an OptiX timeline can be attributed to path compaction.
 
-The Thrust capture shows substantial time in kernels whose names begin with thrust, followed by further Thrust work. Long `cudaStreamSynchronize` calls and a visible `cudaFree` accompany this sequence. This is evidence that the selected compaction implementation introduces substantial processing and synchronization around an otherwise short intersection/shading stage. The screenshot alone does not identify the purpose of every internal Thrust kernel. The benchmark results establish the overall penalty: for Suzanne, **320 FPS without compaction drops to 132 FPS with Thrust**. Thrust is slower in all four reported scenes.
+The Thrust capture shows substantial time in kernels whose names begin with thrust, followed by further Thrust work. Long `cudaStreamSynchronize` calls and a visible `cudaFree` accompany this sequence. This is evidence that the selected compaction implementation introduces substantial processing and synchronization around an otherwise short intersection/shading stage. The screenshot alone does not identify the purpose of every internal Thrust kernel. The benchmark results establish the overall penalty for Suzanne, **320 FPS without compaction drops to 132 FPS with Thrust**. Thrust is slower in all four reported scenes.
 
-The CUB capture shows a prominent initial partition stage followed by much smaller later-bounce tasks and memory events. This is consistent with the benefit of processing fewer surviving paths, although the screenshot does not report their counts. In the controlled results, CUB raises Suzanne from **320 to 342 FPS** and FlightHelmet from **295 to 300 FPS**, but lowers Sponza from **99 to 77 FPS**. CUB substantially improves on this Thrust implementation, but compaction is still a scene-dependent tradeoff.
+The CUB capture shows a prominent initial partition stage followed by much smaller later-bounce tasks and memory events. This is consistent with the benefit of processing fewer surviving paths. In the controlled results, CUB raises Suzanne from **320 to 342 FPS** and FlightHelmet from **295 to 300 FPS**, but lowers Sponza from **99 to 77 FPS**. 
 
 #### Extra: Fixed-Count CUB Compaction
 
@@ -234,14 +234,14 @@ Compared with active-count CUB, fixed-count CUB performs substantially worse for
 
 In the enclosed no-compaction capture, substantial intersection and shading work remains across the bounce sequence. With CUB, substantial work also persists, with partition stages and memory operations repeated between bounces. Unlike the rapidly shrinking tail in the other CUB capture, this sequence suggests that more paths continue bouncing inside the enclosure.
 
-The selected-frame average increases from **8.37 ms (119.52 FPS)** without compaction to **12.11 ms (82.56 FPS)** with CUB: about **45% more frame time**, or **31% lower FPS**. This supports the expected limitation of compaction in a closed scene: paying to partition paths is less useful when many paths survive. Actual per-bounce active counts would be needed to quantify that explanation.
+The selected-frame average increases from **8.37 ms (119.52 FPS)** without compaction to **12.11 ms (82.56 FPS)** with CUB: about **45% more frame time**, or **31% lower FPS**. This supports the expected limitation of compaction in a closed scene: paying to partition paths is less useful when many paths survive.
 
 | Implementation | Suzanne Open | Suzanne Enclosed |
 |---|---:|---:|
 | OptiX ISect | 320 | 128 |
 | OptiX ISect + CUB | 342 | 91 |
 
-CUB improves throughput by **6.9%** in the open scene but reduces it by **28.9%** in the enclosed scene. Escaping paths in the open scene allow compaction to reduce subsequent work. In the enclosure, more paths continue bouncing, leaving less work to eliminate while partitioning and active-count readback still incur overhead. This agrees with the profiling captures above.
+CUB improves throughput by **6.9%** in the open scene but reduces it by **28.9%** in the enclosed scene. Escaping paths in the open scene allow compaction to reduce subsequent work. In the enclosure, more paths continue bouncing, leaving less work to eliminate while partitioning and active-count readback still incur overhead. This aligns with the profiling captures above.
 
 
 ### Moving the Bounce Loop into OptiX Raygen
@@ -266,7 +266,7 @@ flowchart TD
 
 The CPU no longer schedules individual bounces. Path state is maintained locally within each invocation, and the completed contribution is written to the output buffer after termination. Intersection results still use the shared intersection buffer.
 
-This removes the separate shading launches and per-bounce partitioning passes. It also changes how work is distributed: invocations can execute different numbers of bounces and take different material branches. The performance comparison examines the balance between reduced launch and buffer traffic overhead and this variation in execution.
+This removes the separate shading launches and per-bounce partitioning passes. It also changes how work is distributed, since invocations can execute different numbers of bounces and take different material branches. The performance comparison examines the balance between reduced launch and buffer traffic overhead and this variation in execution.
 
 #### If we pass more code into "OptiX kernels", where is that code actually run? Can RT cores handle non-RT supported code?
 
@@ -280,7 +280,7 @@ The Nsight Systems captures show the resulting change in execution structure. Re
 |---|---|
 | OptiX bounce loop | <img src="https://github.com/user-attachments/assets/bd769251-14db-4994-9b55-1531d0656da9" alt="OptiX bounce loop" width="900" /> |
 
-The repeated intersection/shading launch pairs are replaced by one main OptiX GPU interval. A separate `generateRayFromCamera` kernel still precedes it, and `finalGather` and display conversion follow it. The capture therefore directly shows the reduction in separately scheduled stages. It reports **1.73 ms (577.38 FPS)** over the selected frames.
+The repeated intersection/shading launch pairs are replaced by one main OptiX GPU interval. A separate `generateRayFromCamera` kernel still precedes it, and `finalGather` and display conversion follow it. The capture therefore directly shows the reduction in separately scheduled stages. It reports **1.73 ms (577.38 fps)** over the selected frames.
 
 The controlled Suzanne benchmark increases from **320 FPS** with OptiX intersection queries alone to **680 FPS** with the bounce loop in raygen, a **2.13× speedup**. This is consistent with avoiding per-bounce host scheduling and separate shading launches. The timeline does not independently measure the contribution of reduced buffer traffic, register use, or divergence, and shading still executes on GPU SMs.
 
