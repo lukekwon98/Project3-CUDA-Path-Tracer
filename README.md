@@ -276,7 +276,7 @@ The CPU no longer schedules individual bounces. Path state is maintained locally
 
 This removes the separate shading launches and per-bounce partitioning passes. It also changes how work is distributed: invocations can execute different numbers of bounces and take different material branches. The performance comparison examines the balance between reduced launch and buffer traffic overhead and this variation in execution.
 
-#### Where the Work Executes and How Memory Is Shared
+#### If we pass more code into "OptiX kernels", where is that code actually run? Can RT cores handle non-RT supported code? - How Work Executes and How Memory Is Shared
 
 According to [NVIDIA’s explanation of OptiX execution](https://forums.developer.nvidia.com/t/take-full-advantage-of-cuda-core-and-rt-core/241682), application-defined OptiX programs execute on the GPU’s streaming multiprocessors (SMs), while RT cores accelerate acceleration-structure traversal and ray–triangle intersection. Camera-ray generation, random sampling, BSDF evaluation, and path-throughput updates therefore continue to execute on ordinary programmable SM hardware when moved into raygen. Closest-hit and miss programs also execute on SMs.
 
