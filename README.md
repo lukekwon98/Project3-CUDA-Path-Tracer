@@ -276,6 +276,18 @@ The CPU no longer schedules individual bounces. Path state is maintained locally
 
 This removes the separate shading launches and per-bounce partitioning passes. It also changes how work is distributed: invocations can execute different numbers of bounces and take different material branches. The performance comparison examines the balance between reduced launch and buffer traffic overhead and this variation in execution.
 
+#### Where the Work Executes and How Memory Is Shared
+
+According to [NVIDIA’s explanation of OptiX execution](https://forums.developer.nvidia.com/t/take-full-advantage-of-cuda-core-and-rt-core/241682), application-defined OptiX programs execute on the GPU’s streaming multiprocessors (SMs), while RT cores accelerate acceleration-structure traversal and ray–triangle intersection. Camera-ray generation, random sampling, BSDF evaluation, and path-throughput updates therefore continue to execute on ordinary programmable SM hardware when moved into raygen. Closest-hit and miss programs also execute on SMs.
+
+CUDA kernels and OptiX programs access the same CUDA-allocated GPU buffers through device pointers. As described in [NVIDIA’s launch-parameter guidance](https://forums.developer.nvidia.com/t/optix-launch-parameters-best-practices/231443/2), the launch-parameter structure resides in constant memory, while pointers inside it reference larger data and writable buffers in global memory. Passing these pointers does not copy the referenced buffers into a separate OptiX memory space.
+
+In this renderer, closest-hit and miss programs write to the intersection buffer, which raygen reads after tracing. The bounce loop maintains a per-path working state within the raygen invocation, then writes the completed path to the same output buffer consumed by the CUDA `finalGather` kernel. This avoids a CPU round trip for path data. Keeping state within an invocation can reduce intermediate global-memory traffic, although it does not guarantee that every variable remains in registers.
+
+Here, sharing buffers means accessing common **GPU global memory**, not CUDA’s block-local `__shared__` memory. OptiX controls execution scheduling and does not support the usual CUDA shared-memory and block-synchronization programming model.
+
+The Nsight Systems captures show the resulting change in execution structure. Repeated OptiX intersection launches and CUDA shading kernels become one main OptiX interval, followed by CUDA accumulation and display conversion. When camera generation also moves into raygen, its separate CUDA kernel disappears. These traces support the reduction in separately launched stages; they do not expose the division of work between SMs and RT cores within the OptiX interval.
+
 #### Profiling the Raygen Bounce Loop
 
 | Configuration | Capture |
