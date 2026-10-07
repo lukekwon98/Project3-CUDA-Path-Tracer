@@ -233,7 +233,7 @@ Compared with active-count CUB, fixed-count CUB performs substantially worse for
 
 | Open | Enclosed |
 |---|---|
-| <img src="https://github.com/user-attachments/assets/77171d03-9835-409a-a178-f7dc240016ff" alt="TestObject2 Suzanne3936" /> | <img src="https://github.com/user-attachments/assets/e02a7a57-9da3-40c8-9d59-c5864f8c7c77" alt="TestObject5 OccludedBackground" width="360" /> |
+| <img src="https://github.com/user-attachments/assets/77171d03-9835-409a-a178-f7dc240016ff" alt="TestObject2 Suzanne3936" width="360" /> | <img src="https://github.com/user-attachments/assets/e02a7a57-9da3-40c8-9d59-c5864f8c7c77" alt="TestObject5 OccludedBackground" width="360" /> |
 
 | Configuration | Capture |
 |---|---|
