@@ -149,14 +149,9 @@ The flowchart above describes modes `1` and `2`. Mode `3` retains a fixed number
 
 Compaction introduces partitioning overhead, and modes `1` and `2` also require the CPU to obtain the active count before scheduling the next bounce. Its benefit therefore depends on how quickly paths terminate and how much intersection and shading work remains.
 
-### Stream Compaction Evaluation
+### Performance Evaluation
 
 The comparison uses identical camera settings, materials, resolution, and maximum bounce depth within each test scene.
-
-- **Open scene:** Measure how quickly escaping paths reduce the active workload.
-- **Closed scene:** Measure the benefit when more paths survive until reaching an emitter or the bounce limit.
-- **Surviving paths:** Plot the active path count after each bounce.
-- **Execution time:** Compare intersection, shading, partitioning, and total iteration time using Nsight Systems.
 
 #### CUDA Profiling: Brute Force, BVH, and Compaction
 
