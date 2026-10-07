@@ -325,7 +325,7 @@ Gaps remain around the short GPU sequence. Once tracing is this fast, host execu
 | OptiX Loop + Cam | 1070 | 960 | 723 | 172 |
 | OptiX Loop + Cam — No Forced Inline | 1050 | 960 | 720 | 170 |
 
-*Average FPS; higher is better.*
+*FPS*
 
 Removing forced inlining has little effect on measured throughput: FPS decreases by **1.9% for Box**, remains unchanged for **Suzanne**, and decreases by **0.4% for FlightHelmet** and **1.2% for Sponza**. Without repeated measurements and variability estimates, these small differences do not establish a consistent performance benefit.
 
