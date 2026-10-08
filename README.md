@@ -629,7 +629,7 @@ These are compile-time settings and require rebuilding after changes.
 - My earlier GLSL path tracer and PBR shader - references for the material implementation.
 - Typescript environment lighting MIS implementation from a pbr group chat.
 
-### Scene Models
+### Scene Assets
 
 This work is based on "Gundam Unicorn" (https://sketchfab.com/3d-models/gundam-unicorn-1410ff9dd1c94807a00b8a0936170196) by kurojishi (https://sketchfab.com/kurojishi) licensed under CC-BY-NC-4.0 (http://creativecommons.org/licenses/by-nc/4.0/)
 
