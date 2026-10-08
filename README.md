@@ -637,7 +637,11 @@ This work is based on "Jigglypuff" (https://sketchfab.com/3d-models/jigglypuff-7
 
 This work is based on "Kirby Fofinho" (https://sketchfab.com/3d-models/kirby-fofinho-79bab9e6d16c43aebf04a70abd0c7dfd) by Dante Rossi - Zion (https://sketchfab.com/rossidante) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
 
+This work is based on "KIRBY MARIO BROS" (https://sketchfab.com/3d-models/kirby-mario-bros-42081342748b4a2c9ea14ff5d67da63f) by ElOsitoAzul (https://sketchfab.com/ElOsitoAzul) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+
 This work is based on "Spheal Doll 3D Scan" (https://sketchfab.com/3d-models/spheal-doll-3d-scan-f084074fa24a4ca49a99f201fb978e9c) by Fallen_ice (https://sketchfab.com/Fallen_ice) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+
+This work is based on "Spheal Pokemon" (https://sketchfab.com/3d-models/spheal-pokemon-05815c4e8d714690bbb615588585d941) by Stopapypa (https://sketchfab.com/Stopapypa) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
 
 This work is based on "Spiderman" (https://sketchfab.com/3d-models/spiderman-b5c87f4ac60b4f5184805edebdd981f4) by Carissa (https://sketchfab.com/cclarke468) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
 
@@ -649,5 +653,6 @@ This work is based on "Wall-E" (https://sketchfab.com/3d-models/wall-e-79a0bff7d
 
 This work is based on "Wooden Table (game ready asset)" (https://sketchfab.com/3d-models/wooden-table-game-ready-asset-7283ac1841504452b53005b8103bb064) by Pixel Life (https://sketchfab.com/pixellife) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
 
-KhornosGroupArchives glTF-Sample-Models for Box, Suzanne, FlightHelmet, DamagedHelmet, Sponza (https://github.com/KhronosGroupArchives/glTF-Sample-Models)
+"Box", "Suzanne", "FlightHelmet", "DamagedHelmet", "Sponza": KhornosGroupArchives glTF-Sample-Models (https://github.com/KhronosGroupArchives/glTF-Sample-Models)
 
+Jupiter Texture: https://www.solarsystemscope.com/textures/
