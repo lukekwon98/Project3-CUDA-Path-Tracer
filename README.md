@@ -289,7 +289,7 @@ The controlled Suzanne benchmark increases from **320 FPS** with OptiX intersect
 
 The final architecture also generates camera rays inside `__raygen__pathtrace`. Each invocation derives its pixel coordinates from its launch index, generates a jittered camera ray, optionally applies thin-lens depth of field, and enters the bounce loop.
 
-This replaces the separate camera-generation kernel and the initial read from the path buffer. The rest of the raygen-loop architecture remains unchanged: completed contributions are written once, then accumulated and converted for display by CUDA kernels.
+This replaces the separate camera-generation kernel and the initial read from the path buffer. The rest of the raygen-loop architecture remains unchanged. Completed contributions are written once, then accumulated and converted for display by CUDA kernels.
 
 The `USE_RAYGEN_CAMERA` toggle preserves the separate-camera version for comparison.
 
@@ -302,7 +302,7 @@ The `USE_RAYGEN_CAMERA` toggle preserves the separate-camera version for compari
 
 With camera generation included, the separate camera kernel disappears. The visible main GPU sequence becomes **OptiX path tracing → final gather → display conversion**. The selected-frame average is **1.13 ms (884.20 FPS)**, compared with **1.73 ms** in the separate-camera capture. The controlled Suzanne benchmark similarly improves from **680 to 960 FPS**, a **41% increase**.
 
-Gaps remain around the short GPU sequence. Once tracing is this fast, host execution, presentation, and scheduling are plausible contributors to total frame time, but these screenshots do not isolate their individual costs.
+Gaps remain around the short GPU sequence. Once tracing is this fast, host execution, presentation, and scheduling are plausible contributors to total frame time, but these results do not isolate their individual costs.
 
 #### Extra: Forced Inlining
 
@@ -313,7 +313,7 @@ Gaps remain around the short GPU sequence. Once tracing is this fast, host execu
 
 *FPS*
 
-Removing forced inlining has little effect on measured throughput: FPS decreases by **1.9% for Box**, remains unchanged for **Suzanne**, and decreases by **0.4% for FlightHelmet** and **1.2% for Sponza**. Without repeated measurements and variability estimates, these small differences do not establish a consistent performance benefit.
+Removing forced inlining has little effect on measured throughput, FPS remains virtually unchanged for all models. Without repeated measurements and variability estimates, these small differences do not establish a consistent performance benefit.
 
 Both profiling captures retain the same main GPU sequence: OptiX path tracing, final gather, and display conversion. Removing `__forceinline__` allows the compiler to make its own inlining decisions, as it does not guarantee that these functions remain uninlined.
 
@@ -325,11 +325,11 @@ emissive-light geometry and intensity, and maximum bounce depth.
 Surfaces use Lambertian diffuse shading with cosine-weighted hemisphere
 sampling. Textures, normal mapping, metallic–roughness shading, refraction, depth of
 field, environment lighting, and explicit direct-light sampling/MIS are
-disabled for these architecture comparisons.
+disabled for these comparisons.
 
 Camera framing may differ between benchmark scenes, but remains fixed
 across implementations within each scene. The enclosed Suzanne scene uses
-a fully closed diffuse box surrounding both Suzanne and the emitter.
+a fully closed diffuse box surrounding both Suzanne and the light source.
 
 | Setting | Value |
 |---|---|
@@ -367,7 +367,7 @@ Average FPS under the shared benchmark configuration above. Column headings list
 | :---: | :---: |
 | <img src="https://github.com/user-attachments/assets/c3f66374-f247-4b0b-8601-b30db7042e9a" alt="TestObject3 FlightHelmet94722" width="360" /> | <img src="https://github.com/user-attachments/assets/34f7b529-89e4-4e50-808f-4b02bb25e5a2" alt="TestObject4 Sponza262267" width="360" /> |
 
-The fastest measured configuration is **OptiX Loop + Cam** in all four scenes. Relative to CUDA BVH without compaction, it is **2.61× faster for Box**, **4.25× for Suzanne**, **6.57× for FlightHelmet**, and **15.64× for Sponza**. These ratios use the controlled FPS table, rather than selected profiler frames. The profiling captures above explain the architectural progression: accelerate intersection first, then reduce the repeated scheduling and staging work around it.
+The fastest measured configuration is **OptiX Loop + Cam** in all four scenes. Relative to CUDA BVH without compaction, it is **2.61× faster for Box**, **4.25× for Suzanne**, **6.57× for FlightHelmet**, and **15.64× for Sponza**. These ratios use the controlled FPS table, rather than selected profiler frames. The profiling captures above explain the architectural progression of accelerating intersections first, then reducing the repeated scheduling and staging work around it.
 
 ## Visual Features
 
@@ -377,7 +377,7 @@ The full feature set is implemented in the OptiX raygen path. The host-controlle
 
 Each iteration samples a random position within every pixel and generates a camera ray through that position. Accumulating these samples progressively smooths silhouette edges and other subpixel details.
 
-Random seeds depend on the iteration and pixel index, with a fixed depth seed of zero for primary camera rays. Both the CUDA camera kernel and the OptiX camera implementation use this approach.
+Random seeds depend on the iteration and pixel index, and both the CUDA camera kernel and the OptiX camera implementation use this approach.
 
 | Without jitter - Mesh | With jitter - Mesh |
 | :---: | :---: |
@@ -391,11 +391,7 @@ Random seeds depend on the iteration and pixel index, with a fixed depth seed of
 
 The renderer supports smooth dielectric transmission and reflection. At each glass intersection, the geometric normal determines whether the ray is entering or leaving the surface, selecting the corresponding incident and transmitted indices of refraction.
 
-The full dielectric Fresnel equations determine the probability of reflection. Otherwise, the ray refracts according to Snell’s law. Total internal reflection produces a reflected ray, and transmitted paths include the squared relative-index-of-refraction factor for radiance transport.
-
-The outgoing ray origin is offset to the appropriate side of the geometric surface to reduce self-intersection artifacts.
-
-A separate reflective material supports perfect mirror reflection at zero roughness and microfacet reflection at nonzero roughness.
+The full dielectric Fresnel equations determine the probability of reflection. Otherwise, the ray refracts according to Snell’s law. Total internal reflection produces a reflected ray, and transmitted paths include the squared relative-ior factor for radiance transport.
 
 | Reflection | Reflection 2 | Reflection 2 |
 | :---: | :---: | :---: |
@@ -500,7 +496,7 @@ Both PDFs are expressed per unit solid angle. Their contributions are weighted u
 
 The renderer stores the previous BSDF PDF so that an escaping BSDF-sampled ray receives the complementary MIS weight. Direct-light contributions are accumulated separately from path throughput.
 
-`USE_ENVIRONMENT_MIS` toggles direct environment sampling and MIS. Enabling it adds distribution-sampling work and visibility rays per eligible surface hit, trading additional work per iteration for the potential to reduce variance. When disabled, environment illumination is gathered through BSDF-sampled paths alone.
+`USE_ENVIRONMENT_MIS` toggles direct environment sampling and MIS. 
 
 ### Depth of Field
 
@@ -532,8 +528,7 @@ The result is converted to 8-bit color and written directly to the OpenGL pixel 
 | :---: | :---: |
 | <img src="https://github.com/user-attachments/assets/3435923e-93de-416d-91fa-82be2120388b" alt="Without Reinhard and gamma correction" width="420" /> | <img src="https://github.com/user-attachments/assets/19f1a6e8-e5f8-477c-8004-b60cdb501649" alt="With Reinhard and gamma correction" width="420" /> |
 
-Without the display conversion, the overall scene appears very dark, while the brightest reflections become nearly solid white. With Reinhard tone mapping and gamma correction, shadow and midtone detail is more visible and the bright reflections retain more visible variation. Reinhard compresses high radiance values, while gamma correction changes their display encoding. This pair demonstrates their combined effect rather than isolating either operation.
-
+Without the display conversion, the overall scene appears very dark, while the brightest reflections become nearly solid white. With Reinhard tone mapping and gamma correction, shadow and midtone detail is more visible and the bright reflections retain more visible variation. Reinhard compresses high radiance values, while gamma correction changes their display encoding.
 ## Build and Usage
 
 ### Installing the OptiX SDK
@@ -580,9 +575,7 @@ The executable accepts a JSON scene file:
 cis565_path_tracer scenes/cornell.json
 ```
 
-In Visual Studio, set the scene path under **Debugging > Command Arguments**, relative to the configured working directory.
-
-The JSON file supplies camera and rendering settings, including resolution, sample count, maximum bounce depth, and output filename.
+We must still give the json file as input because it supplies camera and rendering settings, including resolution, sample count, maximum bounce depth, and output filename.
 
 The current OptiX scene selects its glTF model and HDR environment separately in `main.cpp`:
 
@@ -593,7 +586,7 @@ loadGltf("../scenes/DamagedHelmet/DamagedHelmet.gltf",
 loadEnvironment("../img/greenwich_park_4k.hdr", environment);
 ```
 
-These paths are relative to the process working directory. Keep each glTF file together with its referenced buffers and textures.
+Keep each glTF file together with its referenced buffers and textures.
 
 ### Rendering Configuration
 
@@ -635,5 +628,5 @@ These are compile-time settings and require rebuilding after changes.
 - NVIDIA OptiX documentation - modules, program groups, pipelines, shader binding tables, and acceleration structures.
 - My earlier GLSL path tracer and PBR shader - references for the material implementation.
 - Typescript environment lighting MIS implementation from a pbr group chat.
-- Licenses included in the individual folders of each gltf asset file.
+- Licenses are included in the individual folders of each gltf asset file.
 
