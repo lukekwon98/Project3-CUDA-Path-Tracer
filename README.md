@@ -13,13 +13,13 @@ This project is a GPU path tracer built with CUDA and NVIDIA OptiX, supporting g
 
 The project explores how rendering architecture affects performance, starting with separate CUDA kernels for camera generation, intersection, and shading, then introducing OptiX intersections, moving the bounce loop into raygen, and finally generating camera rays within the same program. The earlier execution paths remain available for comparison.
 
-<img src="https://github.com/user-attachments/assets/6b081d53-71d7-45c5-96e4-296da682ee11" alt="5" width="900" />
+<img src="https://github.com/user-attachments/assets/6b081d53-71d7-45c5-96e4-296da682ee11" alt="5" width="450" />
 
 ### Render Gallery
 
 | Render 1 | Render 2 |
 | :---: | :---: |
-| <img src="https://github.com/user-attachments/assets/9b3ce840-2d83-4ab5-948b-c7c038f368a6" alt="1" width="360" /> | <img src="https://github.com/user-attachments/assets/7f69a0ba-f6ef-45e6-8ffa-d7ec2b07e257" alt="NotFinal" width="360" /> |
+| <img src="https://github.com/user-attachments/assets/9b3ce840-2d83-4ab5-948b-c7c038f368a6" alt="1" width="540" /> | <img src="https://github.com/user-attachments/assets/7f69a0ba-f6ef-45e6-8ffa-d7ec2b07e257" alt="NotFinal" width="540" /> |
 
 | Render 3 | Render 4 |
 | :---: | :---: |
@@ -201,7 +201,7 @@ This architecture introduces accelerated triangle intersection while preserving 
 
 Without compaction, the capture shows repeated pairs of OptiX intersection launches and CUDA shading kernels. Later pairs are shorter, but each bounce still requires host scheduling and separate stages. Small memory events and repeated CPU `cudaMemcpy` calls are visible even in the no-compaction capture, so not every transfer in an OptiX timeline can be attributed to path compaction.
 
-The Thrust capture shows substantial time in kernels whose names begin with thrust, followed by further Thrust work. Long `cudaStreamSynchronize` calls and a visible `cudaFree` accompany this sequence. This is evidence that the selected compaction implementation introduces substantial processing and synchronization around an otherwise short intersection/shading stage. The screenshot alone does not identify the purpose of every internal Thrust kernel. The benchmark results establish the overall penalty for Suzanne, **320 FPS without compaction drops to 132 FPS with Thrust**. Thrust is slower in all four reported scenes.
+The Thrust capture shows substantial time in kernels whose names begin with thrust, followed by further Thrust work. Long `cudaStreamSynchronize` calls and a visible `cudaFree` accompany this sequence. This is evidence that the selected compaction implementation introduces substantial processing and synchronization around an otherwise short intersection/shading stage. The benchmark results establish the overall penalty for Suzanne, **320 FPS without compaction drops to 132 FPS with Thrust**. Thrust is slower in all four reported scenes.
 
 The CUB capture shows a prominent initial partition stage followed by much smaller later-bounce tasks and memory events. This is consistent with the benefit of processing fewer surviving paths. In the controlled results, CUB raises Suzanne from **320 to 342 FPS** and FlightHelmet from **295 to 300 FPS**, but lowers Sponza from **99 to 77 FPS**. 
 
